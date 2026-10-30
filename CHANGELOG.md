@@ -2,6 +2,18 @@
 
 Changes to evalkit are recorded by vertical slice. Each completed slice receives an installable GitHub release and an updated Homebrew tap formula.
 
+## [0.3.0] - 2026-10-30 — V3: Bounded scheduling, retries, deadlines
+
+### Added
+- Configuration version 3 with explicit bounded case concurrency (1–16) and scorer attempt budget (1–10).
+- Deterministic result ordering independent of worker completion order; Run deadline applies to all work.
+- Core-owned retry controller for typed transient scorer errors; no implicit target replays.
+- Linux/macOS process-group termination on cancellation, with bounded cleanup uncertainty (not hard sandboxing).
+- Acceptance fixtures for concurrent ordering, retry success/exhaustion, permanent failure, deadline and invalid concurrency.
+
+### Refactored
+- Extracted shared case evaluation and quality aggregation across V2 and V3 (no duplicate scoring logic).
+
 ## [0.2.0] - 2026-10-30 — V2: Dataset and assessment completeness
 
 ### Added

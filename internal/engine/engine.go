@@ -161,14 +161,14 @@ func execute(ctx context.Context, c Config) ([]byte, error) {
 		CaseID string          `json:"case_id"`
 		Input  json.RawMessage `json:"input"`
 	}{c.Case.ID, c.Case.Input})
-	cmd := exec.CommandContext(ctx, c.Target.Command, c.Target.Args...)
+	cmd := exec.Command(c.Target.Command, c.Target.Args...)
 	cmd.Dir = workdir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
 	var stdout boundedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard // Never echo arbitrary target diagnostics as trusted output.
-	if err := cmd.Run(); err != nil {
+	if err := runProcessGroup(ctx, cmd); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -202,8 +202,13 @@ func RunJSON(ctx context.Context, raw []byte, artifactDir string) Outcome {
 	var header struct {
 		Version int `json:"version"`
 	}
-	if err := json.Unmarshal(raw, &header); err == nil && header.Version == 2 {
-		return runV2(ctx, raw, artifactDir, o)
+	if err := json.Unmarshal(raw, &header); err == nil {
+		switch header.Version {
+		case 2:
+			return runV2(ctx, raw, artifactDir, o)
+		case 3:
+			return runV3(ctx, raw, artifactDir, o)
+		}
 	}
 	c, digest, err := validate(raw)
 	if err != nil {

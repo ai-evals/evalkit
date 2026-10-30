@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // V2Config is the versioned multi-case, multi-scorer definition.
@@ -36,9 +37,10 @@ type V2Scorer struct {
 }
 
 type ScorerObservation struct {
-	ID     string   `json:"id"`
-	Status string   `json:"status"`
-	Score  *float64 `json:"score,omitempty"`
+	ID       string   `json:"id"`
+	Status   string   `json:"status"`
+	Score    *float64 `json:"score,omitempty"`
+	Attempts int      `json:"attempts,omitempty"`
 }
 
 type V2CaseResult struct {
@@ -93,94 +95,148 @@ func validateV2(raw []byte) (V2Config, string, error) {
 	return cfg, hex.EncodeToString(sum[:]), nil
 }
 
+// runV2 retains the serialized behavior of the V2 contract. V3 shares the
+// same validated case/scorer evaluation logic with a bounded worker pool.
 func runV2(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outcome {
 	cfg, digest, err := validateV2(raw)
 	if err != nil {
 		return fail(o, "CONFIG_INVALID", "RUN", "Configuration validation failed: "+err.Error())
 	}
-	o.ConfigDigest = digest
-	if err = ctx.Err(); err != nil {
+	return runCases(ctx, cfg, digest, artifactDir, o, 1, 1)
+}
+
+// evaluateCase never mutates shared configuration or authoritative state. Results
+// are returned to the coordinator and committed in dataset ordinal order.
+func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, maxAttempts int) (V2CaseResult, []Diagnostic) {
+	result := V2CaseResult{ID: c.ID, State: "PENDING"}
+	for _, sc := range cfg.Scorers {
+		result.Scorers = append(result.Scorers, ScorerObservation{ID: sc.ID, Status: "SKIPPED"})
+	}
+	invalid := c.ID == "" || occurrences > 1
+	if _, err := decodeJSONValue(c.Input); err != nil {
+		invalid = true
+	}
+	if _, err := decodeJSONValue(c.Expected); err != nil {
+		invalid = true
+	}
+	if invalid {
+		result.State = "INVALID"
+		result.TargetStatus = "SKIPPED"
+		return result, []Diagnostic{{Code: "DATASET_INVALID_CASE", Scope: "CASE", Message: "Invalid case identity or JSON input"}}
+	}
+	var target Config
+	target.Case.ID = c.ID
+	target.Case.Input = append(json.RawMessage(nil), c.Input...)
+	target.Target.Command = cfg.Target.Command
+	target.Target.Args = append([]string(nil), cfg.Target.Args...)
+	output, err := execute(ctx, target)
+	if err != nil {
+		result.State = "ERRORED"
+		result.TargetStatus = "ERRORED"
+		for i := range result.Scorers {
+			result.Scorers[i].Status = "ERRORED"
+		}
+		return result, []Diagnostic{{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: err.Error()}}
+	}
+	result.State = "SCORED"
+	result.TargetStatus = "SUCCEEDED"
+	actual, _ := decodeJSONValue(output)
+	expected, _ := decodeJSONValue(c.Expected)
+	for i, sc := range cfg.Scorers {
+		// Built-in exact matching is deterministic and normally needs only one
+		// attempt. The same retry gate is used by V4 extension scorers.
+		score, attempts, scoreErr := retryScorer(ctx, maxAttempts, func(context.Context) (float64, error) {
+			return exactMatchScore(actual, expected), nil
+		})
+		if scoreErr != nil {
+			result.State = "ERRORED"
+			result.Scorers[i] = ScorerObservation{ID: sc.ID, Status: "ERRORED", Attempts: attempts}
+		} else {
+			result.Scorers[i] = ScorerObservation{ID: sc.ID, Status: "SUCCEEDED", Score: &score, Attempts: attempts}
+		}
+	}
+	return result, nil
+}
+
+func qualityOfCases(results []V2CaseResult, scorers []V2Scorer) string {
+	incomplete, failed := false, false
+	for _, c := range results {
+		if c.State != "SCORED" {
+			incomplete = true
+		}
+		for i, sc := range scorers {
+			if !sc.Required {
+				continue
+			}
+			if i >= len(c.Scorers) || c.Scorers[i].Status != "SUCCEEDED" || c.Scorers[i].Score == nil {
+				incomplete = true
+			} else if *c.Scorers[i].Score < sc.Threshold {
+				failed = true
+			}
+		}
+	}
+	if incomplete {
+		return "INDETERMINATE"
+	}
+	if failed {
+		return "FAIL"
+	}
+	return "PASS"
+}
+
+func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o Outcome, concurrency, maxAttempts int) Outcome {
+	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
+	o.ConfigDigest = digest
 	o.State = "RUNNING"
-
-	counts := map[string]int{}
+	occurrences := make(map[string]int, len(cfg.Cases))
 	for _, c := range cfg.Cases {
-		counts[c.ID]++
+		occurrences[c.ID]++
 	}
-	incomplete, failed := false, false
-	for _, c := range cfg.Cases {
-		if err = ctx.Err(); err != nil {
-			return cancelled(o, err)
-		}
-		result := V2CaseResult{ID: c.ID, State: "PENDING"}
-		for _, s := range cfg.Scorers {
-			result.Scorers = append(result.Scorers, ScorerObservation{ID: s.ID, Status: "SKIPPED"})
-		}
-		invalid := c.ID == "" || counts[c.ID] > 1
-		if _, err = decodeJSONValue(c.Input); err != nil {
-			invalid = true
-		}
-		if _, err = decodeJSONValue(c.Expected); err != nil {
-			invalid = true
-		}
-		if invalid {
-			result.State = "INVALID"
-			result.TargetStatus = "SKIPPED"
-			incomplete = true
-			o.Diagnostics = append(o.Diagnostics, Diagnostic{Code: "DATASET_INVALID_CASE", Scope: "CASE", Message: "Invalid case identity or JSON input"})
-			o.Cases = append(o.Cases, result)
-			continue
-		}
-		// Reuse the validated bounded V1 command protocol without duplicating
-		// process execution or output validation semantics.
-		var target Config
-		target.Case.ID = c.ID
-		target.Case.Input = append(json.RawMessage(nil), c.Input...)
-		target.Target.Command = cfg.Target.Command
-		target.Target.Args = append([]string(nil), cfg.Target.Args...)
-		output, executeErr := execute(ctx, target)
-		if ctx.Err() != nil {
-			return cancelled(o, ctx.Err())
-		}
-		if executeErr != nil {
-			result.State = "ERRORED"
-			result.TargetStatus = "ERRORED"
-			incomplete = true
-			for j := range result.Scorers {
-				result.Scorers[j].Status = "ERRORED"
-			}
-			o.Diagnostics = append(o.Diagnostics, Diagnostic{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: executeErr.Error()})
-		} else {
-			result.State = "SCORED"
-			result.TargetStatus = "SUCCEEDED"
-			actual, _ := decodeJSONValue(output)
-			expected, _ := decodeJSONValue(c.Expected)
-			for i, s := range cfg.Scorers {
-				score := exactMatchScore(actual, expected)
-				result.Scorers[i] = ScorerObservation{ID: s.ID, Status: "SUCCEEDED", Score: &score}
-				if s.Required && score < s.Threshold {
-					failed = true
+	results := make([]V2CaseResult, len(cfg.Cases))
+	diagnostics := make([][]Diagnostic, len(cfg.Cases))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					continue
 				}
+				results[i], diagnostics[i] = evaluateCase(ctx, cfg, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts)
 			}
+		}()
+	}
+dispatch:
+	for i := range cfg.Cases {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- i:
 		}
-		o.Cases = append(o.Cases, result)
 	}
-	quality := "PASS"
-	if incomplete {
-		quality = "INDETERMINATE"
-	} else if failed {
-		quality = "FAIL"
+	close(jobs)
+	workers.Wait()
+	if err := ctx.Err(); err != nil {
+		return cancelled(o, err)
 	}
+	o.Cases = results
+	for _, items := range diagnostics {
+		o.Diagnostics = append(o.Diagnostics, items...)
+	}
+	quality := qualityOfCases(results, cfg.Scorers)
 	o.State = "FINALIZING"
 	committed := o
 	committed.State = "COMPLETED"
 	committed.Quality = &quality
 	committed.ArtifactDir = artifactDir
-	if err = ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
-	if err = publish(ctx, artifactDir, committed); err != nil {
+	if err := publish(ctx, artifactDir, committed); err != nil {
 		if ctx.Err() != nil {
 			return cancelled(o, ctx.Err())
 		}

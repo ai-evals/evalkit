@@ -69,3 +69,14 @@ Invalid cases are accounted for explicitly and yield INDETERMINATE when required
 coverage cannot be completed. Version 1 remains compatible.
 
 The V2 implementation is still serial; concurrency and attempt retry budgets are V3.
+
+## V3 bounded execution
+
+See `examples/evalkit-v3.json` for a complete V3 example.
+
+Configuration version 3 adds `execution: {"concurrency": 3, "scorer_max_attempts": 2}`.
+Case execution uses a bounded worker pool while preserving original dataset order in
+artifacts. Scorer retry eligibility is strict and cannot retry target commands.
+Run deadlines stop new case admission and request process-group termination.
+A local process group is **not** a hostile-code sandbox and cannot prevent
+processes from escaping the group or enforcing network/filesystem isolation.
