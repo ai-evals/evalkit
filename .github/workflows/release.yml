@@ -1,0 +1,92 @@
+name: Publish verified slice release
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: slice-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Publish only once per version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(tr -d '\n\r' < VERSION)
+          if ! [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid VERSION: $VERSION" >&2; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build reproducible cross-platform CLI archives
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              name="evalkit_v${VERSION}_${os}_${arch}"
+              GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build \
+                -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+                -o "dist/evalkit" ./cmd/evalkit
+              tar -C dist -czf "dist/${name}.tar.gz" evalkit
+              rm dist/evalkit
+            done
+          done
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+      - name: Publish GitHub release from passed main commit
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            git tag "v${VERSION}" "$COMMIT"
+            git push origin "v${VERSION}"
+          fi
+          gh release create "v${VERSION}" dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag --title "evalkit v${VERSION}" \
+            --notes "Slice release v${VERSION}. See CHANGELOG.md for the scope and acceptance tests."
+      - name: Update Homebrew formula in this repository's tap
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/render_formula.py "$VERSION" dist/SHA256SUMS > /tmp/evalkit.rb
+          # The tap lives in the same repository: brew tap ai-evals/evalkit https://github.com/ai-evals/evalkit.git
+          # GITHUB_TOKEN commits do not retrigger CI/release workflows.
+          gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" -X PUT \
+            -f message="chore(homebrew): update formula for v${VERSION}" \
+            -f content="$(base64 -w0 /tmp/evalkit.rb)" \
+            -f branch=main \
+            $(gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" \
+              --jq '.sha' 2>/dev/null | xargs -r -I{} echo -f sha={})
