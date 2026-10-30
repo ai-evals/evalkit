@@ -53,15 +53,16 @@ type CaseResult struct {
 }
 
 type Outcome struct {
-	SchemaVersion int            `json:"schema_version"`
-	RunID         string         `json:"run_id"`
-	State         string         `json:"state"`
-	Quality       *string        `json:"quality"`
-	ConfigDigest  string         `json:"config_digest,omitempty"`
-	Case          *CaseResult    `json:"case,omitempty"`
-	Cases         []V2CaseResult `json:"cases,omitempty"`
-	Diagnostics   []Diagnostic   `json:"diagnostics,omitempty"`
-	ArtifactDir   string         `json:"artifact_dir,omitempty"`
+	SchemaVersion int                    `json:"schema_version"`
+	RunID         string                 `json:"run_id"`
+	State         string                 `json:"state"`
+	Quality       *string                `json:"quality"`
+	ConfigDigest  string                 `json:"config_digest,omitempty"`
+	Case          *CaseResult            `json:"case,omitempty"`
+	Cases         []V2CaseResult         `json:"cases,omitempty"`
+	Measurement   *MeasurementDefinition `json:"measurement,omitempty"`
+	Diagnostics   []Diagnostic           `json:"diagnostics,omitempty"`
+	ArtifactDir   string                 `json:"artifact_dir,omitempty"`
 }
 
 func newRunID() string {
@@ -226,6 +227,7 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 		return fail(o, "CONFIG_INVALID", "RUN", "Configuration validation failed: "+err.Error())
 	}
 	o.ConfigDigest = digest
+	o.Measurement = measurementForCases([]V2Case{{ID: c.Case.ID}}, []V2Scorer{{ID: "exact_match", Kind: "exact_match", Threshold: c.Scorer.Threshold, Required: true}})
 	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
@@ -385,7 +387,7 @@ func publish(ctx context.Context, finalDir string, outcome Outcome) error {
 // artifact's author or verify external provider/model identities.
 func VerifyArtifact(dir string) (Outcome, error) {
 	var o Outcome
-	commitRaw, err := os.ReadFile(filepath.Join(dir, "commit.json"))
+	commitRaw, err := readEvidenceFile(filepath.Join(dir, "commit.json"))
 	if err != nil {
 		return o, errors.New("commit marker unavailable")
 	}
@@ -397,11 +399,11 @@ func VerifyArtifact(dir string) (Outcome, error) {
 	if err := decodeOne(commitRaw, &marker); err != nil || marker.Version != 1 {
 		return o, errors.New("unsupported commit marker")
 	}
-	runRaw, err := os.ReadFile(filepath.Join(dir, "run.json"))
+	runRaw, err := readEvidenceFile(filepath.Join(dir, "run.json"))
 	if err != nil {
 		return o, errors.New("run evidence unavailable")
 	}
-	reportRaw, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	reportRaw, err := readEvidenceFile(filepath.Join(dir, "report.json"))
 	if err != nil {
 		return o, errors.New("required report unavailable")
 	}
@@ -421,7 +423,7 @@ func VerifyArtifact(dir string) (Outcome, error) {
 	if err := decodeOne(reportRaw, &report); err != nil {
 		return Outcome{}, errors.New("invalid report")
 	}
-	if o.State != "COMPLETED" || o.Quality == nil || o.RunID != report.RunID || *o.Quality != report.Quality {
+	if o.SchemaVersion != 1 || o.RunID == "" || o.State != "COMPLETED" || o.Quality == nil || o.RunID != report.RunID || *o.Quality != report.Quality {
 		return Outcome{}, errors.New("artifact semantic mismatch")
 	}
 	if len(o.Cases) > 0 {
@@ -430,6 +432,9 @@ func VerifyArtifact(dir string) (Outcome, error) {
 		}
 	} else if o.Case == nil || ((o.Case.Score == nil) != (report.Score == nil)) || (o.Case.Score != nil && *o.Case.Score != *report.Score) {
 		return Outcome{}, errors.New("artifact score mismatch")
+	}
+	if err := verifyMeasurementAccounting(o); err != nil {
+		return Outcome{}, err
 	}
 	return o, nil
 }

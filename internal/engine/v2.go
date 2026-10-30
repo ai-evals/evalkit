@@ -238,6 +238,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 		return cancelled(o, err)
 	}
 	o.ConfigDigest = digest
+	o.Measurement = measurementForCases(cfg.Cases, cfg.Scorers)
 	o.State = "RUNNING"
 	occurrences := make(map[string]int, len(cfg.Cases))
 	for _, c := range cfg.Cases {
