@@ -30,10 +30,11 @@ type V2Case struct {
 }
 
 type V2Scorer struct {
-	ID        string  `json:"id"`
-	Kind      string  `json:"kind"`
-	Threshold float64 `json:"threshold"`
-	Required  bool    `json:"required"`
+	ID             string  `json:"id"`
+	Kind           string  `json:"kind"`
+	Threshold      float64 `json:"threshold"`
+	Required       bool    `json:"required"`
+	Implementation string  `json:"implementation,omitempty"`
 }
 
 type ScorerObservation struct {
@@ -41,6 +42,7 @@ type ScorerObservation struct {
 	Status   string   `json:"status"`
 	Score    *float64 `json:"score,omitempty"`
 	Attempts int      `json:"attempts,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 type V2CaseResult struct {
@@ -51,6 +53,10 @@ type V2CaseResult struct {
 }
 
 func validateV2(raw []byte) (V2Config, string, error) {
+	return validateV2WithCustom(raw, nil)
+}
+
+func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V2Config, string, error) {
 	var cfg V2Config
 	if len(raw) > maxConfigBytes {
 		return cfg, "", errors.New("configuration exceeds size limit")
@@ -77,8 +83,18 @@ func validateV2(raw []byte) (V2Config, string, error) {
 			return cfg, "", errors.New("scorer IDs must be nonempty and unique")
 		}
 		scorerIDs[scorer.ID] = true
-		if scorer.Kind != "exact_match" || scorer.Threshold < 0 || scorer.Threshold > 1 {
-			return cfg, "", errors.New("unsupported scorer or invalid threshold")
+		if scorer.Threshold < 0 || scorer.Threshold > 1 {
+			return cfg, "", errors.New("invalid scorer threshold")
+		}
+		switch scorer.Kind {
+		case "exact_match":
+		case "custom":
+			registeredScorer, ok := registered[scorer.ID]
+			if !ok || scorer.Implementation == "" || registeredScorer.Implementation != scorer.Implementation || registeredScorer.Evaluate == nil {
+				return cfg, "", errors.New("custom scorer identity or registration unavailable")
+			}
+		default:
+			return cfg, "", errors.New("unsupported scorer kind")
 		}
 		if scorer.Required {
 			required++
@@ -102,12 +118,12 @@ func runV2(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outco
 	if err != nil {
 		return fail(o, "CONFIG_INVALID", "RUN", "Configuration validation failed: "+err.Error())
 	}
-	return runCases(ctx, cfg, digest, artifactDir, o, 1, 1)
+	return runCases(ctx, cfg, digest, artifactDir, o, 1, 1, nil)
 }
 
 // evaluateCase never mutates shared configuration or authoritative state. Results
 // are returned to the coordinator and committed in dataset ordinal order.
-func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, maxAttempts int) (V2CaseResult, []Diagnostic) {
+func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, maxAttempts int, custom map[string]RegisteredScorer) (V2CaseResult, []Diagnostic) {
 	result := V2CaseResult{ID: c.ID, State: "PENDING"}
 	for _, sc := range cfg.Scorers {
 		result.Scorers = append(result.Scorers, ScorerObservation{ID: sc.ID, Status: "SKIPPED"})
@@ -142,20 +158,53 @@ func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, 
 	result.TargetStatus = "SUCCEEDED"
 	actual, _ := decodeJSONValue(output)
 	expected, _ := decodeJSONValue(c.Expected)
+	var diagnostics []Diagnostic
+	requiredError := false
 	for i, sc := range cfg.Scorers {
-		// Built-in exact matching is deterministic and normally needs only one
-		// attempt. The same retry gate is used by V4 extension scorers.
-		score, attempts, scoreErr := retryScorer(ctx, maxAttempts, func(context.Context) (float64, error) {
-			return exactMatchScore(actual, expected), nil
-		})
-		if scoreErr != nil {
-			result.State = "ERRORED"
-			result.Scorers[i] = ScorerObservation{ID: sc.ID, Status: "ERRORED", Attempts: attempts}
+		var candidate AssessmentCandidate
+		var attempts int
+		var scoreErr error
+		if sc.Kind == "exact_match" {
+			var score float64
+			score, attempts, scoreErr = retryScorer(ctx, maxAttempts, func(context.Context) (float64, error) { return exactMatchScore(actual, expected), nil })
+			if scoreErr == nil {
+				candidate = AssessmentCandidate{Kind: "SCORED", Score: &score}
+			}
 		} else {
-			result.Scorers[i] = ScorerObservation{ID: sc.ID, Status: "SUCCEEDED", Score: &score, Attempts: attempts}
+			ext := custom[sc.ID]
+			input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Actual: append(json.RawMessage(nil), output...), Expected: append(json.RawMessage(nil), c.Expected...)}
+			candidate, attempts, scoreErr = retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return ext.Evaluate(ctx, input.Clone()) })
 		}
+		observation := ScorerObservation{ID: sc.ID, Attempts: attempts}
+		if scoreErr != nil || !validCandidate(candidate) {
+			observation.Status = "ERRORED"
+			if sc.Required {
+				requiredError = true
+			}
+			code := "SCORER_RESULT_INVALID"
+			message := "Scorer returned an invalid assessment"
+			if scoreErr != nil {
+				code = "SCORER_OPERATION_ERROR"
+				message = "Scorer operation failed"
+			}
+			diagnostics = append(diagnostics, Diagnostic{Code: code, Scope: "SCORER", Message: message})
+		} else if candidate.Kind == "UNEVALUABLE" {
+			observation.Status = "UNEVALUABLE"
+			observation.Reason = candidate.Reason
+			if sc.Required {
+				requiredError = true
+			}
+		} else {
+			observation.Status = "SUCCEEDED"
+			score := *candidate.Score
+			observation.Score = &score
+		}
+		result.Scorers[i] = observation
 	}
-	return result, nil
+	if requiredError {
+		result.State = "ERRORED"
+	}
+	return result, diagnostics
 }
 
 func qualityOfCases(results []V2CaseResult, scorers []V2Scorer) string {
@@ -184,7 +233,7 @@ func qualityOfCases(results []V2CaseResult, scorers []V2Scorer) string {
 	return "PASS"
 }
 
-func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o Outcome, concurrency, maxAttempts int) Outcome {
+func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o Outcome, concurrency, maxAttempts int, custom map[string]RegisteredScorer) Outcome {
 	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
@@ -206,7 +255,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 				if ctx.Err() != nil {
 					continue
 				}
-				results[i], diagnostics[i] = evaluateCase(ctx, cfg, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts)
+				results[i], diagnostics[i] = evaluateCase(ctx, cfg, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, custom)
 			}
 		}()
 	}

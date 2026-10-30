@@ -18,7 +18,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Format
-        run: test -z "$(gofmt -l cmd internal examples)"
+        run: test -z "$(gofmt -l cmd internal examples sdk)"
       - name: Test, including acceptance fixtures
         run: go test -race -count=1 ./...
       - name: Vet

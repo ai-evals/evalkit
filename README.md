@@ -80,3 +80,16 @@ artifacts. Scorer retry eligibility is strict and cannot retry target commands.
 Run deadlines stop new case admission and request process-group termination.
 A local process group is **not** a hostile-code sandbox and cannot prevent
 processes from escaping the group or enforcing network/filesystem isolation.
+
+## V4 public Go SDK
+
+The Go package `github.com/ai-evals/evalkit/sdk` provides a small `Runner` API.
+Register trusted in-process `Scorer` implementations with an exact ID and
+implementation identity, then invoke `Runner.Run(ctx, sdk.Request{...})` with
+version 4 JSON configuration. `sdk.Scored(float64)` and
+`sdk.Unevaluable(reason)` are distinct results; operational errors are returned
+through Go `error`. Invalid scores are rejected by the authoritative core.
+
+Scorers are serialized by instance by default. Custom Go code is trusted
+in-process code and **not** sandboxed or forcibly interruptible.
+See `sdk/runner_test.go` for executable examples.

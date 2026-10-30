@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 )
 
 // V3Config introduces bounded case-worker concurrency and scorer retry budget.
@@ -53,8 +52,5 @@ func runV3(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outco
 	}
 	sum := sha256.Sum256(append([]byte("evalkit:v3:config:\x00"), original...))
 	digest := hex.EncodeToString(sum[:])
-	if digest == "" {
-		return fail(o, "CONFIG_INVALID", "RUN", errors.New("invalid fingerprint").Error())
-	}
-	return runCases(ctx, validated, digest, artifactDir, o, cfg.Execution.Concurrency, cfg.Execution.ScorerMaxAttempts)
+	return runCases(ctx, validated, digest, artifactDir, o, cfg.Execution.Concurrency, cfg.Execution.ScorerMaxAttempts, nil)
 }

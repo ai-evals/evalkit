@@ -192,6 +192,15 @@ func fail(o Outcome, code, scope, message string) Outcome {
 // RunJSON creates a Run before validation and returns its final structured
 // outcome. A completed quality FAIL is a successful framework operation.
 func RunJSON(ctx context.Context, raw []byte, artifactDir string) Outcome {
+	return runJSON(ctx, raw, artifactDir, nil)
+}
+
+// RunJSONWithScorers is the internal bridge used by the narrow public Go SDK.
+func RunJSONWithScorers(ctx context.Context, raw []byte, artifactDir string, extensions map[string]RegisteredScorer) Outcome {
+	return runJSON(ctx, raw, artifactDir, extensions)
+}
+
+func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map[string]RegisteredScorer) Outcome {
 	o := Outcome{SchemaVersion: 1, RunID: newRunID(), State: "VALIDATING"}
 	if o.RunID == "" {
 		return fail(o, "RUN_ID_UNAVAILABLE", "RUN", "Cannot allocate run identity")
@@ -208,6 +217,8 @@ func RunJSON(ctx context.Context, raw []byte, artifactDir string) Outcome {
 			return runV2(ctx, raw, artifactDir, o)
 		case 3:
 			return runV3(ctx, raw, artifactDir, o)
+		case 4:
+			return runV4(ctx, raw, artifactDir, o, extensions)
 		}
 	}
 	c, digest, err := validate(raw)
