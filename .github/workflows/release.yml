@@ -75,18 +75,24 @@ jobs:
             --verify-tag --title "evalkit v${VERSION}" \
             --notes "Slice release v${VERSION}. See CHANGELOG.md for the scope and acceptance tests."
       - name: Update Homebrew formula in this repository's tap
-        if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          python3 scripts/render_formula.py "$VERSION" dist/SHA256SUMS > /tmp/evalkit.rb
-          # The tap lives in the same repository: brew tap ai-evals/evalkit https://github.com/ai-evals/evalkit.git
-          # GITHUB_TOKEN commits do not retrigger CI/release workflows.
-          gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" -X PUT \
-            -f message="chore(homebrew): update formula for v${VERSION}" \
-            -f content="$(base64 -w0 /tmp/evalkit.rb)" \
-            -f branch=main \
-            $(gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" \
-              --jq '.sha' 2>/dev/null | xargs -r -I{} echo -f sha={})
+          mkdir -p dist
+          if [[ ! -f dist/SHA256SUMS ]]; then
+            gh release download "v${VERSION}" --pattern SHA256SUMS --dir dist
+          fi
+          python3 scripts/render_formula.py "${VERSION}" dist/SHA256SUMS > /tmp/evalkit.rb
+          ruby -c /tmp/evalkit.rb
+          current_sha=$(gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" --jq '.sha' 2>/dev/null || true)
+          extra_args=()
+          if [[ -n "$current_sha" ]]; then
+            extra_args+=(-f "sha=$current_sha")
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/contents/Formula/evalkit.rb" \
+            --method PUT \
+            -f "message=chore(homebrew): update formula for v${VERSION}" \
+            -f "content=$(base64 -w0 /tmp/evalkit.rb)" \
+            -f branch=main "${extra_args[@]}"
