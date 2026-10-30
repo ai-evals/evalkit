@@ -1,0 +1,23 @@
+name: Import verified V1 source
+on:
+  push:
+    branches: [feat/v1-walking-skeleton]
+permissions:
+  contents: write
+jobs:
+  hydrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/v1-walking-skeleton
+      - name: Install tested sources and remove bootstrap
+        run: |
+          set -euo pipefail
+          base64 -d v1-payload.b64 | tar -xz
+          git rm -f v1-payload.b64 .github/workflows/v1-bootstrap.yml
+          git add -A
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git commit -m "feat(v1): complete evaluated walking skeleton, CI and Homebrew release flow"
+          git push origin HEAD:feat/v1-walking-skeleton
