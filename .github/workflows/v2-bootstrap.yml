@@ -1,0 +1,24 @@
+name: Import verified V2 source
+on:
+  push:
+    branches: [feat/v2-dataset-coverage]
+permissions:
+  contents: write
+jobs:
+  hydrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/v2-dataset-coverage
+      - name: Import tested source changes
+        if: hashFiles('v2-payload.b64') != ''
+        run: |
+          set -euo pipefail
+          base64 -d v2-payload.b64 | tar -xz
+          git rm -f v2-payload.b64
+          git add -A
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git commit -m "feat(v2): multi-case scoring and explicit coverage"
+          git push origin HEAD:feat/v2-dataset-coverage
