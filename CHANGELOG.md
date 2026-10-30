@@ -2,6 +2,18 @@
 
 Changes to evalkit are recorded by vertical slice. Each completed slice receives an installable GitHub release and an updated Homebrew tap formula.
 
+## [0.4.0] - 2026-10-30 — V4: Public Go SDK and custom scorer
+
+### Added
+- `sdk.Runner` with typed Run outcomes, quality verdict and safe typed framework errors.
+- Versioned v4 configuration with explicit custom scorer ID and implementation identity.
+- Trusted in-process scorer registration with immutable input getters and scored/unevaluable assessment variants.
+- Core-validation of scorer results, safe error normalization, shared bounded retry controller, and serial scorer-instance invocation by default.
+- SDK acceptance fixtures for PASS/FAIL/INDETERMINATE, identity mismatch, invalid score, cancellation, retries, immutability and concurrency.
+
+### Refactored
+- Reused versioned dataset and run orchestration, avoiding a separate SDK evaluation engine.
+
 ## [0.3.0] - 2026-10-30 — V3: Bounded scheduling, retries, deadlines
 
 ### Added

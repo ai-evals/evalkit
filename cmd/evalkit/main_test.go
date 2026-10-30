@@ -120,3 +120,34 @@ func TestCLIV2MultipleCaseParity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCLICustomScorerRequiresSDKRegistration(t *testing.T) {
+	folder := t.TempDir()
+	config := map[string]any{
+		"version":   4,
+		"cases":     []any{map[string]any{"id": "case-1", "input": map[string]any{"q": "ready?"}, "expected": map[string]any{"answer": "yes"}}},
+		"target":    map[string]any{"command": "unused-executable", "args": []string{}},
+		"scorers":   []any{map[string]any{"id": "custom", "kind": "custom", "implementation": "example/custom@1", "required": true, "threshold": 1.0}},
+		"execution": map[string]any{"concurrency": 1, "scorer_max_attempts": 1},
+	}
+	raw, _ := json.Marshal(config)
+	path := filepath.Join(folder, "config.json")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(folder, "artifact")
+	var stdout bytes.Buffer
+	if code := run([]string{"run", "--config", path, "--artifact-dir", artifact}, &stdout); code != 2 {
+		t.Fatalf("exit=%d: %s", code, stdout.String())
+	}
+	var outcome engine.Outcome
+	if err := json.Unmarshal(stdout.Bytes(), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.State != "FAILED" {
+		t.Fatalf("outcome: %+v", outcome)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("unauthorized artifact: %v", err)
+	}
+}
