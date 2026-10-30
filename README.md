@@ -1,8 +1,8 @@
-# evalkit — V1 walking skeleton
+# evalkit — evalkit walking skeleton
 
 Outside-in implementation of the first vertical slice of the evalkit specification.
 
-**Scope:** one JSON case, one direct command target, one required exact-match scorer, deterministic quality verdict, and locally committed JSON run evidence. This is a development skeleton, not a release-ready or security-isolated runner.
+**V1 scope:** one JSON case, one direct command target, one required exact-match scorer, deterministic quality verdict, and locally committed JSON run evidence. This is a development skeleton, not a release-ready or security-isolated runner.
 
 ## Run tests
 
@@ -58,3 +58,14 @@ Releases are generated **only after the `CI` workflow passes on `main`**. The pu
 workflow tags the tested commit, builds release archives, creates the GitHub release,
 and updates `Formula/evalkit.rb` using actual release archive checksums.
 Do not assume a new version is installable until the release workflow finishes.
+
+## V2 multi-case configuration
+
+See `examples/evalkit-v2.json` for a complete multi-case sample.
+
+Configuration version 2 accepts `cases` and named `scorers` arrays; `required: true`
+scorers determine required coverage. Each case has `id`, `input`, and `expected` JSON.
+Invalid cases are accounted for explicitly and yield INDETERMINATE when required
+coverage cannot be completed. Version 1 remains compatible.
+
+The V2 implementation is still serial; concurrency and attempt retry budgets are V3.

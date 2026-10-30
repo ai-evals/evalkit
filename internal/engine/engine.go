@@ -53,14 +53,15 @@ type CaseResult struct {
 }
 
 type Outcome struct {
-	SchemaVersion int          `json:"schema_version"`
-	RunID         string       `json:"run_id"`
-	State         string       `json:"state"`
-	Quality       *string      `json:"quality"`
-	ConfigDigest  string       `json:"config_digest,omitempty"`
-	Case          *CaseResult  `json:"case,omitempty"`
-	Diagnostics   []Diagnostic `json:"diagnostics,omitempty"`
-	ArtifactDir   string       `json:"artifact_dir,omitempty"`
+	SchemaVersion int            `json:"schema_version"`
+	RunID         string         `json:"run_id"`
+	State         string         `json:"state"`
+	Quality       *string        `json:"quality"`
+	ConfigDigest  string         `json:"config_digest,omitempty"`
+	Case          *CaseResult    `json:"case,omitempty"`
+	Cases         []V2CaseResult `json:"cases,omitempty"`
+	Diagnostics   []Diagnostic   `json:"diagnostics,omitempty"`
+	ArtifactDir   string         `json:"artifact_dir,omitempty"`
 }
 
 func newRunID() string {
@@ -198,6 +199,12 @@ func RunJSON(ctx context.Context, raw []byte, artifactDir string) Outcome {
 	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &header); err == nil && header.Version == 2 {
+		return runV2(ctx, raw, artifactDir, o)
+	}
 	c, digest, err := validate(raw)
 	if err != nil {
 		return fail(o, "CONFIG_INVALID", "RUN", "Configuration validation failed: "+err.Error())
@@ -221,10 +228,7 @@ func RunJSON(ctx context.Context, raw []byte, artifactDir string) Outcome {
 		result.TargetStatus = "SUCCEEDED"
 		got, _ := decodeJSONValue(output)
 		want, _ := decodeJSONValue(c.Case.Expected)
-		score := 0.0
-		if reflect.DeepEqual(got, want) {
-			score = 1.0
-		}
+		score := exactMatchScore(got, want)
 		result.Score = &score
 		result.ScorerStatus = "SUCCEEDED"
 	}
@@ -303,11 +307,16 @@ func publish(ctx context.Context, finalDir string, outcome Outcome) error {
 		return err
 	}
 	runJSON = append(runJSON, '\n')
+	var legacyScore *float64
+	if outcome.Case != nil {
+		legacyScore = outcome.Case.Score
+	}
 	reportJSON, err := json.MarshalIndent(struct {
-		RunID   string   `json:"run_id"`
-		Quality string   `json:"quality"`
-		Score   *float64 `json:"score,omitempty"`
-	}{outcome.RunID, *outcome.Quality, outcome.Case.Score}, "", "  ")
+		RunID   string         `json:"run_id"`
+		Quality string         `json:"quality"`
+		Score   *float64       `json:"score,omitempty"`
+		Cases   []V2CaseResult `json:"cases,omitempty"`
+	}{outcome.RunID, *outcome.Quality, legacyScore, outcome.Cases}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -388,9 +397,10 @@ func VerifyArtifact(dir string) (Outcome, error) {
 		return Outcome{}, errors.New("invalid run evidence")
 	}
 	var report struct {
-		RunID   string   `json:"run_id"`
-		Quality string   `json:"quality"`
-		Score   *float64 `json:"score"`
+		RunID   string         `json:"run_id"`
+		Quality string         `json:"quality"`
+		Score   *float64       `json:"score"`
+		Cases   []V2CaseResult `json:"cases"`
 	}
 	if err := decodeOne(reportRaw, &report); err != nil {
 		return Outcome{}, errors.New("invalid report")
@@ -398,8 +408,21 @@ func VerifyArtifact(dir string) (Outcome, error) {
 	if o.State != "COMPLETED" || o.Quality == nil || o.RunID != report.RunID || *o.Quality != report.Quality {
 		return Outcome{}, errors.New("artifact semantic mismatch")
 	}
-	if o.Case == nil || ((o.Case.Score == nil) != (report.Score == nil)) || (o.Case.Score != nil && *o.Case.Score != *report.Score) {
+	if len(o.Cases) > 0 {
+		if !reflect.DeepEqual(o.Cases, report.Cases) || report.Score != nil || o.Case != nil {
+			return Outcome{}, errors.New("artifact case evidence mismatch")
+		}
+	} else if o.Case == nil || ((o.Case.Score == nil) != (report.Score == nil)) || (o.Case.Score != nil && *o.Case.Score != *report.Score) {
 		return Outcome{}, errors.New("artifact score mismatch")
 	}
 	return o, nil
+}
+
+// exactMatchScore is the one canonical exact-match implementation across
+// configuration versions and supported invocation surfaces.
+func exactMatchScore(actual, expected any) float64 {
+	if reflect.DeepEqual(actual, expected) {
+		return 1
+	}
+	return 0
 }

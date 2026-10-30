@@ -2,6 +2,18 @@
 
 Changes to evalkit are recorded by vertical slice. Each completed slice receives an installable GitHub release and an updated Homebrew tap formula.
 
+## [0.2.0] - 2026-10-30 — V2: Dataset and assessment completeness
+
+### Added
+- Configuration schema version 2 with multiple cases and named required/optional scorers.
+- Deterministic case ordering and explicit invalid-case accounting for duplicate IDs and missing case JSON.
+- Aggregate quality based on complete required scoring coverage, not the optional scorer count.
+- Version 2 artifact report and reader verification; v1 configuration and artifacts remain supported.
+- Acceptance fixtures for full PASS, threshold FAIL, INDETERMINATE coverage, and invalid datasets.
+
+### Refactored
+- Reused V1 bounded command-target execution and result validation across case definitions.
+
 ## [0.1.0] - 2026-10-30 — V1: One complete evaluation
 
 ### Added
