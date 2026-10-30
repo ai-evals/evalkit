@@ -11,13 +11,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feat/v1-walking-skeleton
-      - name: Install tested sources and remove bootstrap
+      - name: Import source files (workflow files are managed separately)
+        if: hashFiles('v1-payload.b64') != ''
         run: |
           set -euo pipefail
-          base64 -d v1-payload.b64 | tar -xz
-          git rm -f v1-payload.b64 .github/workflows/v1-bootstrap.yml
+          base64 -d v1-payload.b64 | tar --exclude='./.github/workflows/*' -xz
+          git rm -f v1-payload.b64
           git add -A
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git commit -m "feat(v1): complete evaluated walking skeleton, CI and Homebrew release flow"
+          git commit -m "feat(v1): tested Go walking skeleton"
           git push origin HEAD:feat/v1-walking-skeleton
