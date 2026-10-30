@@ -19,7 +19,7 @@ func TestCLITargetHelper(t *testing.T) {
 		CaseID string          `json:"case_id"`
 		Input  json.RawMessage `json:"input"`
 	}
-	if json.NewDecoder(os.Stdin).Decode(&request) != nil || request.CaseID != "case-1" {
+	if json.NewDecoder(os.Stdin).Decode(&request) != nil || (request.CaseID != "case-1" && request.CaseID != "case-2") {
 		os.Exit(9)
 	}
 	for _, a := range os.Args {
@@ -81,5 +81,42 @@ func TestVersionCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	if code := run([]string{"version"}, &stdout); code != 0 || !strings.Contains(stdout.String(), "evalkit ") {
 		t.Fatalf("version: code=%d output=%q", code, stdout.String())
+	}
+}
+
+func TestCLIV2MultipleCaseParity(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := t.TempDir()
+	cfg := map[string]any{
+		"version": 2,
+		"cases": []any{
+			map[string]any{"id": "case-1", "input": map[string]string{"q": "one"}, "expected": map[string]string{"answer": "yes"}},
+			map[string]any{"id": "case-2", "input": map[string]string{"q": "two"}, "expected": map[string]string{"answer": "yes"}},
+		},
+		"target":  map[string]any{"command": exe, "args": []string{"-test.run=^TestCLITargetHelper$", "--", "mode=pass"}},
+		"scorers": []any{map[string]any{"id": "required", "kind": "exact_match", "threshold": 1.0, "required": true}},
+	}
+	raw, _ := json.Marshal(cfg)
+	configPath := filepath.Join(folder, "v2.json")
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(folder, "artifact")
+	var stdout bytes.Buffer
+	if code := run([]string{"run", "--config", configPath, "--artifact-dir", artifact}, &stdout); code != 0 {
+		t.Fatalf("exit=%d: %s", code, stdout.String())
+	}
+	var outcome engine.Outcome
+	if err := json.Unmarshal(stdout.Bytes(), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Quality == nil || *outcome.Quality != "PASS" || len(outcome.Cases) != 2 {
+		t.Fatalf("outcome: %+v", outcome)
+	}
+	if _, err := engine.VerifyArtifact(artifact); err != nil {
+		t.Fatal(err)
 	}
 }
