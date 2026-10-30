@@ -93,3 +93,19 @@ through Go `error`. Invalid scores are rejected by the authoritative core.
 Scorers are serialized by instance by default. Custom Go code is trusted
 in-process code and **not** sandboxed or forcibly interruptible.
 See `sdk/runner_test.go` for executable examples.
+
+## V5 read-only historical inspection
+
+```sh
+evalkit inspect --artifact-dir /path/to/previous/run
+```
+
+The CLI returns typed JSON describing the recorded run, artifact self-consistency,
+and whether retained measurement-accounting evidence could be checked. In the SDK,
+use `sdk.NewInspector().Inspect(ctx, artifactDir)` without Run execution authority.
+
+SHA256 checksums verify local **self-consistency**, not authenticated authorship.
+Older v0.1-v0.4 artifacts may lack a self-contained measurement contract; their
+measurement-accounting status is therefore `NOT_RETAINED`, not fabricated as verified.
+The basic local reader rejects symlinked evidence and bounded file overflows,
+but it is not a hardened hostile-concurrent-filesystem sandbox.

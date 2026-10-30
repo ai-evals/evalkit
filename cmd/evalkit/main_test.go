@@ -151,3 +151,46 @@ func TestCLICustomScorerRequiresSDKRegistration(t *testing.T) {
 		t.Fatalf("unauthorized artifact: %v", err)
 	}
 }
+
+func TestCLIInspectVerifiedArtifact(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]any{
+		"version": 1,
+		"case":    map[string]any{"id": "case-1", "input": map[string]string{"q": "ready?"}, "expected": map[string]string{"answer": "yes"}},
+		"target":  map[string]any{"command": exe, "args": []string{"-test.run=^TestCLITargetHelper$", "--", "mode=pass"}},
+		"scorer":  map[string]any{"kind": "exact_match", "threshold": 1.0},
+	}
+	raw, _ := json.Marshal(cfg)
+	folder := t.TempDir()
+	config := filepath.Join(folder, "run.json")
+	if err := os.WriteFile(config, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(folder, "artifact")
+	var runResult, inspection bytes.Buffer
+	if code := run([]string{"run", "--config", config, "--artifact-dir", artifact}, &runResult); code != 0 {
+		t.Fatalf("run failed: %s", runResult.String())
+	}
+	if code := run([]string{"inspect", "--artifact-dir", artifact}, &inspection); code != 0 {
+		t.Fatalf("inspect failed: %s", inspection.String())
+	}
+	var view engine.Inspection
+	if err := json.Unmarshal(inspection.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Quality != "PASS" || view.Integrity != "SELF_CONSISTENT" {
+		t.Fatalf("view: %+v", view)
+	}
+}
+func TestCLIInspectInvalidArtifact(t *testing.T) {
+	var stdout bytes.Buffer
+	if code := run([]string{"inspect", "--artifact-dir", t.TempDir()}, &stdout); code != 2 {
+		t.Fatalf("code=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ARTIFACT_VERIFICATION_FAILED") {
+		t.Fatalf("missing typed error: %s", stdout.String())
+	}
+}

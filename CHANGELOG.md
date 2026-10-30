@@ -2,6 +2,18 @@
 
 Changes to evalkit are recorded by vertical slice. Each completed slice receives an installable GitHub release and an updated Homebrew tap formula.
 
+## [0.5.0] - 2026-10-30 — V5: Verified historical inspection
+
+### Added
+- Read-only `evalkit inspect --artifact-dir DIR` and narrow Go SDK Inspector.
+- Bounded regular-file artifact reads with symlink rejection, versioned integrity closure and typed failures.
+- Self-described measurement evidence for new runs, permitting internal score/quality consistency checks.
+- Explicit qualification when older artifacts lack measurement definitions; never claim author authentication from self-checksums.
+- Tests for tampering, missing commit, symlink evidence, contradictory rehashed verdicts, historical evidence limitations, SDK/CLI inspection, and read-only behavior.
+
+### Refactored
+- Shared artifact verification between CLI, SDK, and core; inspection does not execute targets or scorers.
+
 ## [0.4.0] - 2026-10-30 — V4: Public Go SDK and custom scorer
 
 ### Added

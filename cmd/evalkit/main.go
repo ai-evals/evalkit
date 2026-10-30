@@ -21,8 +21,11 @@ func run(args []string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, "evalkit", version)
 		return 0
 	}
+	if len(args) > 0 && args[0] == "inspect" {
+		return inspect(args[1:], stdout)
+	}
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: evalkit run --config FILE --artifact-dir DIR [--timeout 10s]")
+		fmt.Fprintln(os.Stderr, "usage: evalkit run --config FILE --artifact-dir DIR [--timeout 10s] | inspect --artifact-dir DIR | version")
 		return 2
 	}
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -57,4 +60,21 @@ func run(args []string, stdout io.Writer) int {
 	default:
 		return 2
 	}
+}
+
+func inspect(args []string, stdout io.Writer) int {
+	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dir := fs.String("artifact-dir", "", "existing artifact directory")
+	if fs.Parse(args) != nil || fs.NArg() != 0 || *dir == "" {
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"schema_version": 1, "error": map[string]string{"code": "INVOCATION_INVALID", "scope": "INVOCATION"}})
+		return 2
+	}
+	result, err := engine.InspectArtifact(context.Background(), *dir)
+	if err != nil {
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"schema_version": 1, "error": map[string]string{"code": "ARTIFACT_VERIFICATION_FAILED", "scope": "INSPECTION"}})
+		return 2
+	}
+	_ = json.NewEncoder(stdout).Encode(result)
+	return 0
 }
