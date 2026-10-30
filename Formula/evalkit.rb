@@ -2,26 +2,26 @@
 class Evalkit < Formula
   desc "Go evaluation harness with typed outcomes and verifiable evidence"
   homepage "https://github.com/ai-evals/evalkit"
-  version "0.3.0"
+  version "0.4.0"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/ai-evals/evalkit/releases/download/v0.3.0/evalkit_v0.3.0_darwin_arm64.tar.gz"
-      sha256 "45dc1cd6518febecf6f829b2d8fcaab24ff22c18de3fcb8b639629e3a9715c7a"
+      url "https://github.com/ai-evals/evalkit/releases/download/v0.4.0/evalkit_v0.4.0_darwin_arm64.tar.gz"
+      sha256 "18710a1f5d8cfdd6dfcbca283dc688939ab4fdea1df708994b159eb536cfef19"
     else
-      url "https://github.com/ai-evals/evalkit/releases/download/v0.3.0/evalkit_v0.3.0_darwin_amd64.tar.gz"
-      sha256 "a2204958e3c1b50d247f007e46f8d6dca2493dc8eb4d8398c7292bcee7852231"
+      url "https://github.com/ai-evals/evalkit/releases/download/v0.4.0/evalkit_v0.4.0_darwin_amd64.tar.gz"
+      sha256 "38bc4f82b171ade4e3686103d0942913dac7d190b109b47e705aeae5d94cd94e"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/ai-evals/evalkit/releases/download/v0.3.0/evalkit_v0.3.0_linux_arm64.tar.gz"
-      sha256 "510ea3d1d6f930bc15bd90f1f24a3896c700f4d092d8320f8e903aca6bfe1127"
+      url "https://github.com/ai-evals/evalkit/releases/download/v0.4.0/evalkit_v0.4.0_linux_arm64.tar.gz"
+      sha256 "5d39e4d50444a40389c9fade1e7d4a9d496d93c9f73d388aaee9ed5adf7c7759"
     else
-      url "https://github.com/ai-evals/evalkit/releases/download/v0.3.0/evalkit_v0.3.0_linux_amd64.tar.gz"
-      sha256 "cb4c093b0ed53f0c870fbd73e21c2493cc532521a28e95d4d10c23e6300ebef9"
+      url "https://github.com/ai-evals/evalkit/releases/download/v0.4.0/evalkit_v0.4.0_linux_amd64.tar.gz"
+      sha256 "a288edcc59623a22be0a2aa05e880d78691e6670b996009838a23f7143c3f9b6"
     end
   end
 
