@@ -49,8 +49,8 @@ The repository also acts as its own Homebrew tap (a separate tap repository is n
 
 ```sh
 brew tap ai-evals/evalkit https://github.com/ai-evals/evalkit.git
-brew install evalkit
-# or: brew upgrade evalkit
+brew install ai-evals/evalkit/evalkit
+# or: brew upgrade ai-evals/evalkit/evalkit
 evalkit version
 ```
 
