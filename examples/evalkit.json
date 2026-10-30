@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "case": {
+    "id": "case-1",
+    "input": {"question": "ready?"},
+    "expected": {"answer": "yes"}
+  },
+  "target": {
+    "command": "/ABSOLUTE/PATH/TO/evalkit-example-target",
+    "args": []
+  },
+  "scorer": {
+    "kind": "exact_match",
+    "threshold": 1.0
+  }
+}
