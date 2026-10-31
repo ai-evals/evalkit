@@ -2,6 +2,17 @@
 
 Changes to evalkit are recorded by vertical slice. Each completed slice receives an installable GitHub release and an updated Homebrew tap formula.
 
+## [0.5.1] - 2026-10-31 — V5 fix: inspector applies the run-time scorer contract
+
+### Fixed
+- `evalkit inspect` no longer certifies artifacts whose retained scorer contract has no required scorer (previously recomputed as PASS) or a threshold outside [0,1]; both are now rejected, matching what `evalkit run` accepts.
+
+### Refactored
+- Single shared scorer-contract rule used by both configuration validation and artifact inspection.
+
+### Added
+- Project-local verification skills: `verify-evalkit` (drives the CLI end to end) and `formal-verify-verdict` (bounded-exhaustive verdict check behind the `formalverify` build tag; not run by `go test ./...`).
+
 ## [0.5.0] - 2026-10-30 — V5: Verified historical inspection
 
 ### Added

@@ -82,7 +82,7 @@ Each check below was run against a scratch break of real code, caught the break,
 
 ## Coverage record and sync
 
-Last confirmed at commit `8fcb0258370f04d542f1831dbd5d3c833805d67c` (v0.5.0).
+Last confirmed at commit `185840f914330c92f53e329e20b37fee53fdbc0c` (merge of the F1/F2 fix, released as v0.5.1).
 
 Covered code:
 
@@ -97,7 +97,7 @@ Covered code:
 To see whether covered code changed since the sync commit:
 
 ```sh
-git diff --stat 8fcb0258370f04d542f1831dbd5d3c833805d67c -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go
+git diff --stat 185840f914330c92f53e329e20b37fee53fdbc0c -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go
 ```
 
 If that diff is non-empty, read it against the properties above, update the oracle or the domains if the contract changed, and run `run.sh`. Move the sync commit forward only after you have confirmed that the harness still describes the code at the new commit. "The run passes" is not enough on its own: for example, a new scorer status that the domain never produces would also pass.

@@ -20,5 +20,5 @@ Preconditions:
 
 ## Gotchas
 
-- Local builds print `dev`. Release builds inject `v0.N.0` through `-ldflags` in the release workflow, which this harness does not reproduce. `VERSION` (currently `0.5.0`) is not read by the binary.
+- Local builds print `dev`. Release builds inject `v<VERSION>` through `-ldflags` in the release workflow, which this harness does not reproduce. `VERSION` (currently `0.5.1`) is not read by the binary.
 - `version` must be the only argument. `evalkit version --json` prints the usage line and exits `2`.
