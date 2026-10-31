@@ -52,7 +52,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		}
 	}
 	fail := func(err error) int {
-		fmt.Fprintln(stderr, "release:", err)
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	switch args[0] {
