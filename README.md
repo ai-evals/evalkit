@@ -41,10 +41,38 @@ Multiple cases/scorers, custom Go scorer API, historical comparison, durable ret
 
 Known hardening work before production readiness: atomic exclusive artifact-path reservation under adversarial races, crash/fault injection around rename and directory fsync, cleanup uncertainty accounting, and stronger termination of process descendants. The v1 tests verify the nominal and deterministic failure paths, not these stronger environmental guarantees.
 
-## Homebrew releases (macOS and Linux)
+## Releases and Homebrew (macOS and Linux)
 
-Each accepted vertical slice is published as a verified `v0.N.0` GitHub release with
-cross-compiled Linux/macOS amd64/arm64 CLI archives and corresponding SHA256SUMS.
+Releases are automatic. Every push to `main` that passes CI on Linux and macOS is
+checked for [Conventional Commits](https://www.conventionalcommits.org/) since the last
+`vX.Y.Z` tag, and the version is derived from them (there is no `VERSION` file):
+
+| Commit type | Release |
+| --- | --- |
+| `fix:`, `perf:`, `revert:` | patch (`0.5.0` → `0.5.1`) |
+| `feat:` | minor (`0.5.1` → `0.6.0`) |
+| `!` after the type, or a `BREAKING CHANGE:` footer | minor while evalkit is `0.x`; from `1.x` it requires a `/vN` module path first |
+| `chore:`, `docs:`, `ci:`, `test:`, `refactor:`, `build:`, `style:` | none |
+
+Pull requests are squash-merged, so the **PR title** is the commit that lands and must be a
+Conventional Commit header (`type(scope): description`); CI checks it and writes what merging
+would publish to the job summary. Use `ci:`/`build:`/`chore:` for changes to the release
+tooling itself, so they do not cut an evalkit release.
+
+A release appears with its tag, cross-compiled Linux/macOS amd64/arm64 archives and
+`SHA256SUMS` all at once (the tag is created when the complete draft release is published).
+Then `Formula/evalkit.rb` and `CHANGELOG.md` are updated on `main` in one
+`chore(release): vX.Y.Z` commit. Nothing is committed when they are already current.
+If a release job fails midway, re-run it (or run the `CI` workflow on `main`); it finishes
+the work without duplicating anything.
+
+To see what the current checkout would publish (read-only, needs only git):
+
+```sh
+go run ./internal/cmd/release plan
+go run ./internal/cmd/release plan --build /tmp/evalkit-dist   # also cross-build the archives
+```
+
 The repository also acts as its own Homebrew tap (a separate tap repository is not required):
 
 ```sh
@@ -53,11 +81,6 @@ brew install ai-evals/evalkit/evalkit
 # or: brew upgrade ai-evals/evalkit/evalkit
 evalkit version
 ```
-
-Releases are generated **only after the `CI` workflow passes on `main`**. The publishing
-workflow tags the tested commit, builds release archives, creates the GitHub release,
-and updates `Formula/evalkit.rb` using actual release archive checksums.
-Do not assume a new version is installable until the release workflow finishes.
 
 ## V2 multi-case configuration
 

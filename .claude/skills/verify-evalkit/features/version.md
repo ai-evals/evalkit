@@ -20,5 +20,5 @@ Preconditions:
 
 ## Gotchas
 
-- Local builds print `dev`. Release builds inject `v0.N.0` through `-ldflags` in the release workflow, which this harness does not reproduce. `VERSION` (currently `0.5.0`) is not read by the binary.
+- Local builds print `dev`. Release builds inject the bare version (`0.5.1`, no `v`) through `-ldflags -X main.version`, from `internal/release` in the CI `release` job, which this harness does not reproduce. There is no `VERSION` file: the version is derived from git tags and Conventional Commits (`go run ./internal/cmd/release plan`).
 - `version` must be the only argument. `evalkit version --json` prints the usage line and exits `2`.

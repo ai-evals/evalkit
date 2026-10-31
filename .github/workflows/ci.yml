@@ -1,25 +1,34 @@
+# The only workflow. release.yml (workflow_run) is deleted: the release job
+# below runs in the same run, at the same commit, after the same tests.
 name: CI
 on:
   push:
     branches: [main]
   pull_request:
+  # Manual reconcile on main (e.g. formula sync failed and the run is older
+  # than the re-run window). Same code path as a push; never an empty commit.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  go:
+  test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Pinned labels: no "-latest label will migrate" notices, and image
+        # moves become a reviewed one-line diff.
+        os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, node24
         with:
-          go-version-file: go.mod
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, node24; cache keyed on go.mod
+        with:
+          go-version-file: go.mod        # uses the toolchain line: go1.27.3
       - name: Format
         run: test -z "$(gofmt -l cmd internal examples sdk)"
-      - name: Test, including acceptance fixtures
+      - name: Test, including acceptance fixtures and internal/release
         run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
@@ -27,3 +36,50 @@ jobs:
         run: go build -o evalkit ./cmd/evalkit
       - name: Smoke CLI
         run: ./evalkit version
+
+  # What merging this PR would publish, in the job summary; fails only if the
+  # PR title is not a Conventional Commit (squash merges land the title).
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0                 # history and tags
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Release plan
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        # Graft (C2 release-check): also cross-build all four archives into
+        # $RUNNER_TEMP, so a cross-compile or reproducibility break fails the PR.
+        run: go run ./internal/cmd/release plan --pr-title "$PR_TITLE" --build "$RUNNER_TEMP/dist"
+
+  release:
+    needs: test                          # tags only ever point at commits that passed both OSes
+    if: >-
+      github.repository == 'ai-evals/evalkit' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write                    # releases, tag-on-publish, one commit to main per release
+    concurrency:
+      group: release                     # one publisher at a time; a dropped pending run is
+      cancel-in-progress: false          # harmless: the next plan includes its commits
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false     # the tool writes through the API, never git push
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false                   # release binaries come from a cold, pinned toolchain
+      - name: Publish release and sync Formula + CHANGELOG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./internal/cmd/release publish
