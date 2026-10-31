@@ -73,8 +73,11 @@ func verifyMeasurementAccounting(o Outcome) error {
 		return nil
 	} // Historical v0.1-v0.4 artifacts
 	m := o.Measurement
-	if m.SchemaVersion != 1 || len(m.CaseIDs) == 0 || len(m.Scorers) == 0 {
+	if m.SchemaVersion != 1 || len(m.CaseIDs) == 0 {
 		return errors.New("unsupported measurement evidence")
+	}
+	if err := validateScorerContract(m.Scorers); err != nil {
+		return fmt.Errorf("invalid measurement scorer contract: %w", err)
 	}
 	if len(o.Cases) > 0 {
 		if len(m.CaseIDs) != len(o.Cases) {
@@ -99,9 +102,6 @@ func verifyMeasurementAccounting(o Outcome) error {
 		return errors.New("legacy measurement mismatch")
 	}
 	sc := m.Scorers[0]
-	if !sc.Required || sc.Threshold < 0 || sc.Threshold > 1 {
-		return errors.New("invalid required scorer contract")
-	}
 	quality := "INDETERMINATE"
 	if o.Case.ScorerStatus == "SUCCEEDED" && o.Case.Score != nil {
 		if *o.Case.Score < 0 || *o.Case.Score > 1 {

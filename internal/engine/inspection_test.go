@@ -146,3 +146,57 @@ func TestV5AC08CancelledInspection(t *testing.T) {
 		t.Fatal("cancelled inspection succeeded")
 	}
 }
+
+// rewriteMeasurementScorers edits the retained scorer contract of a committed
+// artifact and re-hashes it, so only the contract itself can be rejected.
+func rewriteMeasurementScorers(t *testing.T, dir string, edit func([]any)) {
+	t.Helper()
+	runRaw, err := os.ReadFile(filepath.Join(dir, "run.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run map[string]any
+	if err := json.Unmarshal(runRaw, &run); err != nil {
+		t.Fatal(err)
+	}
+	edit(run["measurement"].(map[string]any)["scorers"].([]any))
+	updated, _ := json.Marshal(run)
+	report, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hRun, hReport := sha256.Sum256(updated), sha256.Sum256(report)
+	marker, _ := json.Marshal(map[string]any{"version": 1, "run_sha256": hex.EncodeToString(hRun[:]), "report_sha256": hex.EncodeToString(hReport[:])})
+	if err := os.WriteFile(filepath.Join(dir, "run.json"), updated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "commit.json"), marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The inspector must only certify scorer contracts that config validation
+// would accept: at least one required scorer, every threshold in [0,1].
+func TestV5AC09InspectorRejectsContractsEvalkitWouldNotRun(t *testing.T) {
+	for name, edit := range map[string]func([]any){
+		"no required scorer": func(s []any) {
+			for _, sc := range s {
+				sc.(map[string]any)["required"] = false
+			}
+		},
+		"threshold below 0": func(s []any) { s[0].(map[string]any)["threshold"] = -0.5 },
+		"threshold above 1": func(s []any) { s[1].(map[string]any)["threshold"] = 1.5 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "artifact")
+			o := RunJSON(context.Background(), configV2(t, []map[string]any{aCase("a", "yes"), aCase("b", "yes")}, exactScorers()), dir)
+			if o.State != "COMPLETED" || o.Quality == nil || *o.Quality != "PASS" {
+				t.Fatalf("run: %+v", o)
+			}
+			rewriteMeasurementScorers(t, dir, edit)
+			if view, err := InspectArtifact(context.Background(), dir); err == nil {
+				t.Fatalf("contract evalkit would not run was certified: %+v", view)
+			}
+		})
+	}
+}

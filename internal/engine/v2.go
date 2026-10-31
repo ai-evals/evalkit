@@ -73,35 +73,17 @@ func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V
 	if strings.TrimSpace(cfg.Target.Command) == "" {
 		return cfg, "", errors.New("target.command is required")
 	}
-	if len(cfg.Scorers) == 0 {
-		return cfg, "", errors.New("scorers must be nonempty")
+	if err := validateScorerContract(cfg.Scorers); err != nil {
+		return cfg, "", err
 	}
-	required := 0
-	scorerIDs := map[string]bool{}
 	for _, scorer := range cfg.Scorers {
-		if scorer.ID == "" || scorerIDs[scorer.ID] {
-			return cfg, "", errors.New("scorer IDs must be nonempty and unique")
+		if scorer.Kind != "custom" {
+			continue
 		}
-		scorerIDs[scorer.ID] = true
-		if scorer.Threshold < 0 || scorer.Threshold > 1 {
-			return cfg, "", errors.New("invalid scorer threshold")
+		registeredScorer, ok := registered[scorer.ID]
+		if !ok || registeredScorer.Implementation != scorer.Implementation || registeredScorer.Evaluate == nil {
+			return cfg, "", errors.New("custom scorer identity or registration unavailable")
 		}
-		switch scorer.Kind {
-		case "exact_match":
-		case "custom":
-			registeredScorer, ok := registered[scorer.ID]
-			if !ok || scorer.Implementation == "" || registeredScorer.Implementation != scorer.Implementation || registeredScorer.Evaluate == nil {
-				return cfg, "", errors.New("custom scorer identity or registration unavailable")
-			}
-		default:
-			return cfg, "", errors.New("unsupported scorer kind")
-		}
-		if scorer.Required {
-			required++
-		}
-	}
-	if required == 0 {
-		return cfg, "", errors.New("at least one required scorer is needed")
 	}
 	canonical, err := json.Marshal(cfg)
 	if err != nil {
@@ -109,6 +91,44 @@ func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V
 	}
 	sum := sha256.Sum256(append([]byte("evalkit:v2:config:\x00"), canonical...))
 	return cfg, hex.EncodeToString(sum[:]), nil
+}
+
+// validateScorerContract is the single definition of a well-formed scorer
+// contract. Config validation and artifact inspection both apply it, so an
+// inspected artifact can only certify a contract evalkit would have run.
+// Custom scorer registration is checked separately by config validation,
+// because inspection never resolves implementations.
+func validateScorerContract(scorers []V2Scorer) error {
+	if len(scorers) == 0 {
+		return errors.New("scorers must be nonempty")
+	}
+	required := 0
+	scorerIDs := map[string]bool{}
+	for _, scorer := range scorers {
+		if scorer.ID == "" || scorerIDs[scorer.ID] {
+			return errors.New("scorer IDs must be nonempty and unique")
+		}
+		scorerIDs[scorer.ID] = true
+		if !(scorer.Threshold >= 0 && scorer.Threshold <= 1) {
+			return errors.New("invalid scorer threshold")
+		}
+		switch scorer.Kind {
+		case "exact_match":
+		case "custom":
+			if scorer.Implementation == "" {
+				return errors.New("custom scorer identity or registration unavailable")
+			}
+		default:
+			return errors.New("unsupported scorer kind")
+		}
+		if scorer.Required {
+			required++
+		}
+	}
+	if required == 0 {
+		return errors.New("at least one required scorer is needed")
+	}
+	return nil
 }
 
 // runV2 retains the serialized behavior of the V2 contract. V3 shares the
