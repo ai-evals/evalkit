@@ -1,0 +1,5 @@
+INSPECTOR accepted FAIL artifact (threshold outside [0,1]): case scorers scored0,scored1 required=[true true] thresholds=[-0.5 1.5]
+INSPECTOR accepted INDETERMINATE artifact (no required scorer): case scorers scored1,uneval required=[false false] thresholds=[-0.5 -0.5]
+INSPECTOR accepted INDETERMINATE artifact (threshold outside [0,1]): case scorers scored1,uneval required=[true true] thresholds=[-0.5 -0.5]
+INSPECTOR accepted PASS artifact (no required scorer): case scorers scored0,scored1 required=[false false] thresholds=[-0.5 -0.5]
+INSPECTOR accepted PASS artifact (threshold outside [0,1]): case scorers scored0,scored1 required=[true true] thresholds=[-0.5 -0.5]
