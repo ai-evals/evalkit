@@ -1,0 +1,10 @@
+# Keeps action majors current so the next Node runtime deprecation arrives
+# as a PR, not as a CI annotation. "ci" commits never trigger a release.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
