@@ -2,6 +2,12 @@
 
 Changes to evalkit up to 0.5.0 were recorded by vertical slice. From 0.5.1 on, each release's section is generated from its Conventional Commits by `internal/release` when the release is published; existing sections are never rewritten.
 
+## [0.5.1] - 2026-10-31
+
+### Bug Fixes
+
+- **inspect:** reject scorer contracts evalkit would never run (ea7f1f1)
+
 ## [0.5.0] - 2026-10-30 — V5: Verified historical inspection
 
 ### Added
