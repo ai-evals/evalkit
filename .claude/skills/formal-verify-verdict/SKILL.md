@@ -63,13 +63,9 @@ That reads: a required scorer returned UNEVALUABLE, yet the case was marked SCOR
 
 ## Current findings (P4, recorded in `known-findings.txt`)
 
-The current code breaks P4. These are findings, not modeling errors. Do not weaken P4 to make it pass.
+None. `known-findings.txt` is empty, and any P4 violation is new.
 
-- **F1: PASS without required coverage is accepted.** If the stored measurement marks no scorer as required, `verifyMeasurementAccounting` recomputes the verdict as PASS and accepts it. Steps: take a real artifact, set `required: false` on every `measurement.scorers` entry, re-hash `commit.json`, and run `evalkit inspect`. The result is PASS with `REPORTED_DEFINITION_CONSISTENT`. evalkit itself refuses to run such a config (`at least one required scorer is needed`).
-- **F2: thresholds outside [0,1] are accepted.** A measurement threshold of -0.5 turns a score of 0 into PASS, and 1.5 turns a score of 1 into FAIL. The V2+ inspector path never range-checks thresholds. The legacy V1 path does: `invalid required scorer contract`.
-- The INDETERMINATE lines in `known-findings.txt` are the same two gaps on artifacts whose verdict happens to be INDETERMINATE.
-
-Impact: the inspector does not authenticate authors (`AuthenticatedAuthor: false`), so anyone who can rewrite and re-hash an artifact can also rewrite its scores. These gaps matter because a buggy writer, or an edited artifact, gets "definition consistent" stamped on a contract evalkit could never have produced. The fix would be for `verifyMeasurementAccounting` to apply the same rules as `validateV2WithCustom`: at least one required scorer, and every threshold in [0,1]. After the fix, delete the matching lines from `known-findings.txt`.
+Resolved: F1 (a measurement with no required scorer was certified as PASS) and F2 (measurement thresholds outside [0,1] were accepted). Both were fixed by making `verifyMeasurementAccounting` apply `validateScorerContract`, the same rule `validateV2WithCustom` uses. `TestV5AC09InspectorRejectsContractsEvalkitWouldNotRun` keeps them covered in the normal suite. Do not add a scorer-contract rule to only one of the two callers; change `validateScorerContract` instead.
 
 ## Proof it can fail
 
@@ -90,7 +86,7 @@ Last confirmed at commit `8fcb0258370f04d542f1831dbd5d3c833805d67c` (v0.5.0).
 
 Covered code:
 
-- `internal/engine/v2.go`: `validateV2WithCustom` (the required/threshold rules that the oracle assumes), `evaluateCase`, `qualityOfCases`, `runCases`
+- `internal/engine/v2.go`: `validateScorerContract` (the required/threshold rules that the oracle assumes, shared by config validation and inspection), `validateV2WithCustom`, `evaluateCase`, `qualityOfCases`, `runCases`
 - `internal/engine/v4.go`: `runV4`
 - `internal/engine/v3.go`: `runV3`. It shares `runCases`, but P1 and P2 drive V4 configs only.
 - `internal/engine/retry.go`: `retryOperation`, `retryScorer`, `retryAssessment`
