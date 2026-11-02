@@ -277,6 +277,6 @@ Limits:
 
 - Artifacts from v0.6.0 and earlier verify, inspect and compare exactly as before. They have no `output`, `subject` or `retained_output`, so neither command shows them.
 - evalkit v0.6.0 and earlier refuse V7 artifacts with `ARTIFACT_VERIFICATION_FAILED`, as v0.4 refused the `measurement` that v0.5 added.
-- evalkit never reads target stderr, but it keeps stdout. Treat every artifact directory, and the `run` stdout in your CI logs, as holding your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text.
+- evalkit never reads target stderr, but it keeps stdout. Treat every artifact directory, and the `run` stdout in your CI logs, as holding your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text. Print only the result JSON on stdout, and send logs, tokens and other secrets to stderr, which evalkit never reads.
 - If `run.json` would exceed the 16 MiB read limit, evalkit cuts every output to one common prefix length that fits, down to no bytes, which keeps form, size and SHA-256. If that does not fit either, the run keeps no output and records `retained_output: NONE`. If the run record does not fit even without outputs, the run fails with `ARTIFACT_COMMIT_FAILED` instead of publishing an artifact that `inspect` would refuse.
 - A cell is listed only when its state or score changes. A change of output alone lists nothing.
