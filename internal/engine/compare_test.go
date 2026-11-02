@@ -485,6 +485,8 @@ func TestV7AC07CompareShowsWhy(t *testing.T) {
 	}
 }
 
+// JSON escapes C0 controls such as ESC itself; the preview replaces DEL and
+// the C1 range, which JSON would otherwise emit raw into CI logs.
 func TestV7PreviewIsBoundedValidText(t *testing.T) {
 	a := func(n int) string { return strings.Repeat("a", n) }
 	for _, c := range []struct {
@@ -500,6 +502,8 @@ func TestV7PreviewIsBoundedValidText(t *testing.T) {
 		{a(outputPreviewBytes-3) + "😀", a(outputPreviewBytes - 3), false},
 		{a(outputPreviewBytes-4) + "😀", a(outputPreviewBytes-4) + "😀", true},
 		{"ok \xff", "ok �", false},
+		{"csi \u009b2J del \x7f", "csi �2J del �", false},
+		{"esc \x1b[31m", "esc \x1b[31m", true},
 	} {
 		if preview, whole := previewOf([]byte(c.in)); preview != c.preview || whole != c.whole {
 			t.Errorf("previewOf(%d bytes ending %q) = %d bytes ending %q, %v; want %d bytes, %v",

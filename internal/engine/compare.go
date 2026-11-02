@@ -273,8 +273,17 @@ func previewOf(b []byte) (preview string, whole bool) {
 			}
 		}
 	}
-	preview = strings.ToValidUTF8(string(p), "\uFFFD")
+	preview = strings.Map(replaceUnescapedControl, strings.ToValidUTF8(string(p), "\uFFFD"))
 	return preview, len(p) == len(b) && preview == string(b)
+}
+
+// replaceUnescapedControl covers the controls JSON encoding leaves raw: DEL
+// and the C1 range, where U+009B is an 8-bit CSI some terminals still honor.
+func replaceUnescapedControl(r rune) rune {
+	if r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		return utf8.RuneError
+	}
+	return r
 }
 
 func sameScore(a, b *float64) bool {
