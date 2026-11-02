@@ -50,6 +50,9 @@ type V2CaseResult struct {
 	State        string              `json:"state"`
 	TargetStatus string              `json:"target_status"`
 	Scorers      []ScorerObservation `json:"scorers"`
+	// Output is present exactly when the target was executed. qualityOfCases
+	// never reads it.
+	Output *TargetOutput `json:"output,omitempty"`
 }
 
 func validateV2(raw []byte) (V2Config, string, error) {
@@ -143,7 +146,9 @@ func runV2(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outco
 
 // evaluateCase never mutates shared configuration or authoritative state. Results
 // are returned to the coordinator and committed in dataset ordinal order.
-func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, maxAttempts int, custom map[string]RegisteredScorer) (V2CaseResult, []Diagnostic) {
+// index is c's dataset ordinal, which attributes diagnostics because case IDs
+// are not unique.
+func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurrences int, maxAttempts int, custom map[string]RegisteredScorer) (V2CaseResult, []Diagnostic) {
 	result := V2CaseResult{ID: c.ID, State: "PENDING"}
 	for _, sc := range cfg.Scorers {
 		result.Scorers = append(result.Scorers, ScorerObservation{ID: sc.ID, Status: "SKIPPED"})
@@ -158,7 +163,7 @@ func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, 
 	if invalid {
 		result.State = "INVALID"
 		result.TargetStatus = "SKIPPED"
-		return result, []Diagnostic{{Code: "DATASET_INVALID_CASE", Scope: "CASE", Message: "Invalid case identity or JSON input"}}
+		return result, []Diagnostic{caseDiagnostic("DATASET_INVALID_CASE", "Invalid case identity or JSON input", index, c.ID)}
 	}
 	var target Config
 	target.Case.ID = c.ID
@@ -166,17 +171,18 @@ func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, 
 	target.Target.Command = cfg.Target.Command
 	target.Target.Args = append([]string(nil), cfg.Target.Args...)
 	output, err := execute(ctx, target)
+	result.Output = retainOutput(output, retentionAllowance(len(cfg.Cases)))
 	if err != nil {
 		result.State = "ERRORED"
 		result.TargetStatus = "ERRORED"
 		for i := range result.Scorers {
 			result.Scorers[i].Status = "ERRORED"
 		}
-		return result, []Diagnostic{{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: err.Error()}}
+		return result, []Diagnostic{caseDiagnostic("TARGET_EXECUTION_ERROR", err.Error(), index, c.ID)}
 	}
 	result.State = "SCORED"
 	result.TargetStatus = "SUCCEEDED"
-	actual, _ := decodeJSONValue(output)
+	actual, _ := decodeJSONValue(output.head)
 	expected, _ := decodeJSONValue(c.Expected)
 	var diagnostics []Diagnostic
 	requiredError := false
@@ -192,7 +198,7 @@ func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, 
 			}
 		} else {
 			ext := custom[sc.ID]
-			input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Actual: append(json.RawMessage(nil), output...), Expected: append(json.RawMessage(nil), c.Expected...)}
+			input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Actual: append(json.RawMessage(nil), output.head...), Expected: append(json.RawMessage(nil), c.Expected...)}
 			candidate, attempts, scoreErr = retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return ext.Evaluate(ctx, input.Clone()) })
 		}
 		observation := ScorerObservation{ID: sc.ID, Attempts: attempts}
@@ -207,7 +213,7 @@ func evaluateCase(ctx context.Context, cfg V2Config, c V2Case, occurrences int, 
 				code = "SCORER_OPERATION_ERROR"
 				message = "Scorer operation failed"
 			}
-			diagnostics = append(diagnostics, Diagnostic{Code: code, Scope: "SCORER", Message: message})
+			diagnostics = append(diagnostics, scorerDiagnostic(code, message, index, c.ID, sc.ID))
 		} else if candidate.Kind == "UNEVALUABLE" {
 			observation.Status = "UNEVALUABLE"
 			observation.Reason = candidate.Reason
@@ -276,7 +282,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 				if ctx.Err() != nil {
 					continue
 				}
-				results[i], diagnostics[i] = evaluateCase(ctx, cfg, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, custom)
+				results[i], diagnostics[i] = evaluateCase(ctx, cfg, i, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, custom)
 			}
 		}()
 	}

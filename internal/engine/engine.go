@@ -43,13 +43,16 @@ type Diagnostic struct {
 	Code    string `json:"code"`
 	Scope   string `json:"scope"`
 	Message string `json:"message"`
+	// Subject is nil for RUN scope and in artifacts published before V7.
+	Subject *DiagnosticSubject `json:"subject,omitempty"`
 }
 
 type CaseResult struct {
-	ID           string   `json:"id"`
-	TargetStatus string   `json:"target_status"`
-	ScorerStatus string   `json:"scorer_status"`
-	Score        *float64 `json:"score,omitempty"`
+	ID           string        `json:"id"`
+	TargetStatus string        `json:"target_status"`
+	ScorerStatus string        `json:"scorer_status"`
+	Score        *float64      `json:"score,omitempty"`
+	Output       *TargetOutput `json:"output,omitempty"`
 }
 
 type Outcome struct {
@@ -152,10 +155,14 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func execute(ctx context.Context, c Config) ([]byte, error) {
+// execute returns what it captured from stdout on every path except
+// cancellation, so a malformed, oversized or failed execution keeps its
+// bytes. On success head is the buffer execute returned before V7.
+func execute(ctx context.Context, c Config) (targetStdout, error) {
+	var stream stdoutDigest
 	workdir, err := os.MkdirTemp("", "evalkit-target-")
 	if err != nil {
-		return nil, errors.New("cannot prepare target workspace")
+		return stream.capture(nil), errors.New("cannot prepare target workspace")
 	}
 	defer os.RemoveAll(workdir)
 	payload, _ := json.Marshal(struct {
@@ -167,21 +174,26 @@ func execute(ctx context.Context, c Config) ([]byte, error) {
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
 	var stdout boundedBuffer
-	cmd.Stdout = &stdout
+	cmd.Stdout = io.MultiWriter(&stdout, &stream)
 	cmd.Stderr = io.Discard // Never echo arbitrary target diagnostics as trusted output.
 	if err := runProcessGroup(ctx, cmd); err != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			// After a kill, runProcessGroup can return before cmd.Wait while
+			// the stdout copier still writes, so reading here would race.
+			return targetStdout{}, ctx.Err()
 		}
-		return nil, errors.New("target process failed")
+		// Any other error is a failed Start, where no copier ran, or a
+		// finished cmd.Wait.
+		return stream.capture(stdout.buf.Bytes()), errors.New("target process failed")
 	}
+	captured := stream.capture(stdout.buf.Bytes())
 	if stdout.overflow {
-		return nil, errors.New("target output exceeds V1 size limit")
+		return captured, errors.New("target output exceeds V1 size limit")
 	}
-	if _, err := decodeJSONValue(stdout.buf.Bytes()); err != nil {
-		return nil, errors.New("target output must be exactly one JSON value")
+	if _, err := decodeJSONValue(captured.head); err != nil {
+		return captured, errors.New("target output must be exactly one JSON value")
 	}
-	return stdout.buf.Bytes(), nil
+	return captured, nil
 }
 
 func fail(o Outcome, code, scope, message string) Outcome {
@@ -241,16 +253,17 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 	result := &CaseResult{ID: c.Case.ID}
 	o.Case = result
 	output, err := execute(ctx, c)
+	result.Output = retainOutput(output, retentionAllowance(1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return cancelled(o, ctx.Err())
 		}
 		result.TargetStatus = "ERRORED"
 		result.ScorerStatus = "ERRORED"
-		o.Diagnostics = append(o.Diagnostics, Diagnostic{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: err.Error()})
+		o.Diagnostics = append(o.Diagnostics, caseDiagnostic("TARGET_EXECUTION_ERROR", err.Error(), 0, c.Case.ID))
 	} else {
 		result.TargetStatus = "SUCCEEDED"
-		got, _ := decodeJSONValue(output)
+		got, _ := decodeJSONValue(output.head)
 		want, _ := decodeJSONValue(c.Case.Expected)
 		score := exactMatchScore(got, want)
 		result.Score = &score
