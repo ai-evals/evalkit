@@ -1,8 +1,8 @@
 # evalkit — evalkit walking skeleton
 
-Outside-in implementation of the first vertical slice of the evalkit specification.
+Outside-in implementation of the evalkit specification, one vertical slice per version.
 
-**V1 scope:** one JSON case, one direct command target, one required exact-match scorer, deterministic quality verdict, and locally committed JSON run evidence. This is a development skeleton, not a release-ready or security-isolated runner.
+**Scope through V6:** versioned JSON configurations with one or more cases and named scorers, one direct command target, bounded concurrency and scorer retries, a Go SDK for trusted custom scorers, a deterministic quality verdict, locally committed JSON run evidence, and read-only inspection and comparison of published runs. Each version's section below states its limits. This is a development skeleton, not a release-ready or security-isolated runner.
 
 ## Run tests
 
@@ -28,7 +28,7 @@ The CLI prints one JSON Run outcome to stdout and returns 0 (PASS), 1 (FAIL), 3 
 
 ## V1 behavior
 
-- Strict versioned JSON configuration, exactly one case and one exact-match scorer.
+- Configuration version 1 is strict JSON with exactly one case and one exact-match scorer. Later versions have their own sections below.
 - Command executed **without a shell**, with a controlled temporary working directory, a reduced environment (PATH only), JSON request on stdin, and one JSON result on stdout.
 - Command output bounded to 1 MiB; no raw target stderr leaked into public diagnostics.
 - Exact-match compares JSON values structurally. Correct result scores 1, mismatch scores 0. A malformed target result makes coverage incomplete and the completed quality INDETERMINATE.
@@ -37,7 +37,7 @@ The CLI prints one JSON Run outcome to stdout and returns 0 (PASS), 1 (FAIL), 3 
 
 ## Deliberately out of scope
 
-Multiple cases/scorers, custom Go scorer API, historical comparison, durable retry scheduler, enforceable process-tree isolation, network/filesystem sandboxing, external providers, arbitrary extension loading, and sophisticated transaction recovery remain later slices. This local executor **must not be used** where those security controls are required.
+A durable retry scheduler, enforceable process-tree isolation, network/filesystem sandboxing, external providers, arbitrary extension loading, and sophisticated transaction recovery remain later slices. This local executor **must not be used** where those security controls are required.
 
 Known hardening work before production readiness: atomic exclusive artifact-path reservation under adversarial races, crash/fault injection around rename and directory fsync, cleanup uncertainty accounting, and stronger termination of process descendants. The v1 tests verify the nominal and deterministic failure paths, not these stronger environmental guarantees.
 
@@ -132,3 +132,84 @@ Older v0.1-v0.4 artifacts may lack a self-contained measurement contract; their
 measurement-accounting status is therefore `NOT_RETAINED`, not fabricated as verified.
 The basic local reader rejects symlinked evidence and bounded file overflows,
 but it is not a hardened hostile-concurrent-filesystem sandbox.
+
+## V6 read-only comparison
+
+```sh
+evalkit compare --baseline /path/to/main-run --candidate /path/to/pr-run
+```
+
+`compare` reads two published artifacts and compares them cell by cell, one cell per
+case and scorer. It prints one JSON document and exits like `run`: 0 SHIP (the
+candidate is PASS), 1 ITERATE (FAIL), 3 INVESTIGATE (INDETERMINATE), and 2 when it
+refuses. It executes nothing and writes nothing.
+
+Each cell is PASSING (scorer SUCCEEDED and score at or above the threshold), FAILING
+(SUCCEEDED and below it) or UNKNOWN (any other scorer status, or a case that is not
+SCORED). From baseline to candidate a cell is IMPROVED (FAILING to PASSING), REGRESSED
+(PASSING to FAILING), LOST_EVIDENCE (to UNKNOWN), GAINED_EVIDENCE (from UNKNOWN) or
+UNCHANGED. `counts` covers every cell and always has all five keys. `changes` lists
+only the cells whose state or score changed, in dataset order, so a score-only change
+such as 0.6 to 0.9 is listed as UNCHANGED. `case_state` explains an UNKNOWN cell whose
+own scorer SUCCEEDED: a required scorer failed on the same case.
+
+The recommendation follows the candidate's quality alone. A required regression makes
+the candidate FAIL or INDETERMINATE, so it never ships. Optional regressions are
+listed but never block.
+
+Real output from `examples/evalkit-v2.json`, where the candidate's target answers
+`no` on `case-2` (formatted with `jq`, exit 1):
+
+```json
+{
+  "schema_version": 1,
+  "recommendation": "ITERATE",
+  "baseline": {"run_id": "25b16eee8b31a989d34f4d5344b1c8d1", "quality": "PASS"},
+  "candidate": {"run_id": "9c5b59cbcc967c4c7de701f57d4fe6cb", "quality": "FAIL"},
+  "counts": {"UNCHANGED": 2, "IMPROVED": 0, "REGRESSED": 2, "LOST_EVIDENCE": 0, "GAINED_EVIDENCE": 0},
+  "changes": [
+    {"case_id": "case-2", "scorer_id": "exact-required", "required": true, "transition": "REGRESSED",
+     "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1},
+     "to": {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0}},
+    {"case_id": "case-2", "scorer_id": "exact-observational", "required": false, "transition": "REGRESSED",
+     "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1},
+     "to": {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0}}
+  ]
+}
+```
+
+A refusal uses the `inspect` envelope with `scope: "COMPARISON"`. `input` names the
+directory to look at, and `reason` says why two verified runs are not comparable:
+
+```json
+{"error":{"code":"COMPARISON_NOT_COMPARABLE","scope":"COMPARISON","reason":"SCORERS_DIFFER"},"schema_version":1}
+```
+
+| Code | `input` | `reason` | Cause |
+| --- | --- | --- | --- |
+| `ARTIFACT_VERIFICATION_FAILED` | `baseline` or `candidate` | | The directory is missing, tampered or not verifiable. Both inputs are verified before comparability is checked. |
+| `COMPARISON_NOT_COMPARABLE` | `baseline` or `candidate` | `MEASUREMENT_NOT_RETAINED` | A v0.1-v0.4 artifact has no retained measurement. |
+| `COMPARISON_NOT_COMPARABLE` | | `CASES_DIFFER` | The case IDs differ, or are the same IDs in a different order. |
+| `COMPARISON_NOT_COMPARABLE` | | `SCORERS_DIFFER` | A scorer's ID, kind, threshold, `required` flag or custom implementation differs. |
+
+In Go, `sdk.NewComparer().Compare(ctx, sdk.ComparisonRequest{BaselineDir: b, CandidateDir: c})`
+returns a `Comparison` with `Recommendation`, `Baseline`, `Candidate`, `Count`, `Changes`
+and `JSON`. `JSON()` is the bytes the CLI prints, without the trailing newline. A refusal
+is a `*sdk.ReadError` with `Code`, `Scope`, `Input` and `Reason`. Cancellation returns
+`context.Canceled` or `context.DeadlineExceeded` itself. `Inspector.Inspect` now
+returns `*sdk.ReadError` too, with the same message as before.
+
+Limits:
+
+- The comparability key is the whole retained measurement contract, so a custom scorer's
+  `implementation` is part of it. A scorer upgraded from `@1` to `@2` is a different
+  instrument, and compare refuses it with `SCORERS_DIFFER`. Publish a new baseline.
+- `config_digest` is neither part of the key nor in the output. It hashes the target,
+  which is what a comparison varies.
+- `inspect` and `compare` share one reader, which is stricter than V5's `inspect`. A
+  re-hashed artifact holding a verdict or a scorer observation evalkit cannot produce
+  is refused as `ARTIFACT_VERIFICATION_FAILED`. Artifacts evalkit published are
+  unaffected.
+- A status change inside UNKNOWN, such as ERRORED to SKIPPED, is UNCHANGED and not listed.
+- There is no `--timeout`. Each side reads three files of bounded size.
+- As with V5, the checksums prove self-consistency, not who produced either artifact.

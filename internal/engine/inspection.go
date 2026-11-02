@@ -34,33 +34,20 @@ type Inspection struct {
 	AuthenticatedAuthor   bool   `json:"authenticated_author"`
 }
 
-type InspectionError struct{ Code string }
-
-func (e *InspectionError) Error() string { return fmt.Sprintf("evalkit inspection: %s", e.Code) }
-
 // InspectArtifact never invokes a target, scorer, provider or credential
 // resolver. It provides only evidence claims actually established by reading.
 func InspectArtifact(ctx context.Context, dir string) (Inspection, error) {
-	if err := ctx.Err(); err != nil {
-		return Inspection{}, err
-	}
-	out, err := VerifyArtifact(dir)
+	run, err := loadVerified(ctx, dir, ReadError{Scope: ScopeInspection})
 	if err != nil {
-		return Inspection{}, &InspectionError{Code: "ARTIFACT_VERIFICATION_FAILED"}
-	}
-	if err := ctx.Err(); err != nil {
 		return Inspection{}, err
-	}
-	if out.Quality == nil {
-		return Inspection{}, errors.New("committed quality missing")
 	}
 	status := "NOT_RETAINED"
-	if out.Measurement != nil {
+	if run.measured != nil {
 		status = "REPORTED_DEFINITION_CONSISTENT"
 	}
 	return Inspection{
-		SchemaVersion: 1, RunID: out.RunID, State: out.State, Quality: *out.Quality,
-		ConfigDigest: out.ConfigDigest, Integrity: "SELF_CONSISTENT",
+		SchemaVersion: 1, RunID: run.runID, State: "COMPLETED", Quality: run.quality.String(),
+		ConfigDigest: run.configDigest, Integrity: "SELF_CONSISTENT",
 		MeasurementAccounting: status, AuthenticatedAuthor: false,
 	}, nil
 }

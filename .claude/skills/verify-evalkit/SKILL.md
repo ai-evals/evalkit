@@ -1,11 +1,11 @@
 ---
 name: verify-evalkit
-description: Drive the evalkit CLI (`evalkit run`, `evalkit inspect`, `evalkit version`) the way a user does, from a freshly built binary in an isolated scratch dir, and capture command/stdout/stderr/exit-code/artifact evidence. Use to prove a change to cmd/, internal/engine, examples/, or the config/artifact format actually works end to end, not just in `go test`.
+description: Drive the evalkit CLI (`evalkit run`, `evalkit inspect`, `evalkit compare`, `evalkit version`) the way a user does, from a freshly built binary in an isolated scratch dir, and capture command/stdout/stderr/exit-code/artifact evidence. Use to prove a change to cmd/, internal/engine, examples/, or the config/artifact format actually works end to end, not just in `go test`.
 ---
 
 # Verify evalkit
 
-evalkit is a Go CLI. The user surface is the terminal: `evalkit run --config FILE --artifact-dir DIR [--timeout D]`, `evalkit inspect --artifact-dir DIR`, `evalkit version`. Each command prints one JSON object to stdout and communicates the verdict through the exit code. The secondary surface is the Go SDK in `sdk/` (`sdk.Runner`, `sdk.NewInspector`); it has no runnable app, so prove SDK changes with `go test ./sdk` and note it as test-level, not user-level, proof.
+evalkit is a Go CLI. The user surface is the terminal: `evalkit run --config FILE --artifact-dir DIR [--timeout D]`, `evalkit inspect --artifact-dir DIR`, `evalkit compare --baseline DIR --candidate DIR`, `evalkit version`. Each command prints one JSON object to stdout and communicates the verdict through the exit code. The secondary surface is the Go SDK in `sdk/` (`sdk.Runner`, `sdk.NewInspector`, `sdk.NewComparer`); it has no runnable app, so prove SDK changes with `go test ./sdk` and note it as test-level, not user-level, proof.
 
 All work goes through one helper, run from the repo root:
 

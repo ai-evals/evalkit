@@ -33,5 +33,6 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Run an evaluation](./run.md) covers v1, v2, and v3 configs with PASS, FAIL, and INDETERMINATE verdicts and their exit codes.
 - [Artifact publication](./artifacts.md) covers the published run/report/commit evidence and the guarantee that a repeated run never overwrites it.
 - [Inspect a past run](./inspect.md) covers read-only inspection, tamper detection, and invocation errors.
+- [Compare two runs](./compare.md) covers the SHIP, ITERATE, and INVESTIGATE recommendations, comparability and verification refusals, and invocation errors.
 - [Deadlines and invocation errors](./deadlines-and-errors.md) covers `--timeout` cancellation, usage errors, and an unreadable config.
 - [Version](./version.md) covers `evalkit version`.
