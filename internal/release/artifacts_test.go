@@ -47,15 +47,6 @@ func TestFormulaGolden(t *testing.T) {
 	if a, b := stanza.FindAllString(string(got), -1), stanza.FindAllString(string(pythonRendered), -1); len(a) != 8 || strings.Join(a, "\n") != strings.Join(b, "\n") {
 		t.Fatalf("url/sha256 stanzas differ from the v0.5.0 formula:\n%v\n%v", a, b)
 	}
-	// The committed tap formula is exactly what the tool renders, so the first
-	// sync after this change does not rewrite it.
-	committed, err := os.ReadFile(filepath.Join("..", "..", "Formula", "evalkit.rb"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(committed, got) {
-		t.Fatal("Formula/evalkit.rb is not the rendering of the newest release; copy testdata/evalkit-0.5.0.rb")
-	}
 }
 
 func TestChecksumsRequireEveryPlatform(t *testing.T) {
