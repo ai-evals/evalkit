@@ -82,14 +82,59 @@ type Change struct {
 	From, To   Endpoint
 }
 
+// OutputChanged reports whether the target wrote different stdout for this
+// case in the two runs. It compares whole streams by size and SHA-256, so it
+// is exact even when an output is truncated. known is false unless both
+// runs retained the case's output.
+func (c Change) OutputChanged() (changed, known bool) {
+	if c.From.Output == nil || c.To.Output == nil {
+		return false, false
+	}
+	return c.From.Output.Size != c.To.Output.Size || c.From.Output.SHA256 != c.To.Output.SHA256, true
+}
+
 // Endpoint is one side of a Change. Score is nil unless Status is
-// "SUCCEEDED".
+// "SUCCEEDED". Output is nil and Diagnostics is empty when that run retained
+// none, as for every run published before V7.
 type Endpoint struct {
 	Cell      CellState
 	CaseState string
 	Status    string
 	Score     *float64
+	Output    *Output
+	// Diagnostics are the case's CASE diagnostics and this cell's scorer's
+	// SCORER diagnostics, in the run's order.
+	Diagnostics []Diagnostic
 }
+
+// Output is a bounded view of a case's retained target stdout. run.json
+// keeps the bytes, base64, at cases[i].output.bytes.
+type Output struct {
+	Form      OutputForm
+	Size      int64  // every byte the target wrote
+	SHA256    string // hex, over all Size bytes
+	Truncated bool   // the artifact keeps fewer than Size bytes
+	Complete  bool   // Preview is every byte the target wrote, unchanged
+	Preview   string // at most the first 1 KiB, as valid UTF-8
+}
+
+// Diagnostic is one static diagnostic. It never holds target stderr or
+// scorer error text.
+type Diagnostic struct {
+	Code    string
+	Scope   string // "CASE" or "SCORER"
+	Message string
+}
+
+// OutputForm equals its JSON spelling.
+type OutputForm string
+
+const (
+	OutputJSON      = OutputForm(engine.OutputJSON)
+	OutputMalformed = OutputForm(engine.OutputMalformed)
+	OutputOversized = OutputForm(engine.OutputOversized)
+	OutputEmpty     = OutputForm(engine.OutputEmpty)
+)
 
 // Each value equals its JSON spelling. TestV6SDKVocabularyIsTheJSONVocabulary
 // fails if these drift from the engine.
@@ -123,12 +168,19 @@ func comparedRun(r engine.ComparedRun) ComparedRun {
 	return ComparedRun{RunID: r.RunID, Quality: QualityVerdict(r.Quality.String())}
 }
 
-// endpoint copies Score, so callers cannot alias the record JSON() encodes.
+// endpoint copies Score, Output and Diagnostics, so callers cannot alias the
+// record JSON() encodes.
 func endpoint(e engine.Endpoint) Endpoint {
 	out := Endpoint{Cell: CellState(e.Cell.String()), CaseState: e.CaseState, Status: e.Status}
 	if e.Score != nil {
 		s := *e.Score
 		out.Score = &s
+	}
+	if v := e.Output; v != nil {
+		out.Output = &Output{Form: OutputForm(v.Form), Size: v.Size, SHA256: v.SHA256, Truncated: v.Truncated, Complete: v.Complete, Preview: v.Preview}
+	}
+	for _, d := range e.Diagnostics {
+		out.Diagnostics = append(out.Diagnostics, Diagnostic{Code: d.Code, Scope: d.Scope, Message: d.Message})
 	}
 	return out
 }

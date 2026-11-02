@@ -20,6 +20,10 @@ func (i Inspection) Integrity() string             { return i.record.Integrity }
 func (i Inspection) MeasurementAccounting() string { return i.record.MeasurementAccounting }
 func (i Inspection) JSON() []byte                  { out, _ := json.Marshal(i.record); return out }
 
+// RetainedOutput is "RETAINED", "TRIMMED" or "NONE", and "" for an artifact
+// published before V7.
+func (i Inspection) RetainedOutput() string { return string(i.record.RetainedOutput) }
+
 // Inspect returns a *ReadError or the bare context error.
 func (_ Inspector) Inspect(ctx context.Context, artifactDir string) (Inspection, error) {
 	record, err := engine.InspectArtifact(ctx, artifactDir)

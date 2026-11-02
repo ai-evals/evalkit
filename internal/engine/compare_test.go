@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,13 +25,25 @@ func v6Uneval() AssessmentCandidate {
 	return AssessmentCandidate{Kind: "UNEVALUABLE", Reason: "EVIDENCE_MISSING"}
 }
 func v6Passing(score float64) Endpoint {
-	return Endpoint{CellPassing, "SCORED", "SUCCEEDED", v6Ptr(score)}
+	return Endpoint{Cell: CellPassing, CaseState: "SCORED", Status: "SUCCEEDED", Score: v6Ptr(score)}
 }
 func v6Failing(score float64) Endpoint {
-	return Endpoint{CellFailing, "SCORED", "SUCCEEDED", v6Ptr(score)}
+	return Endpoint{Cell: CellFailing, CaseState: "SCORED", Status: "SUCCEEDED", Score: v6Ptr(score)}
 }
 func v6Unknown(caseState, status string) Endpoint {
-	return Endpoint{CellUnknown, caseState, status, nil}
+	return Endpoint{Cell: CellUnknown, CaseState: caseState, Status: status}
+}
+
+// v6WithoutEvidence drops V7's Output and Diagnostics, so the V6 tests keep
+// pinning which cells are listed and how. The V7 tests pin the evidence.
+func v6WithoutEvidence(changes []CellChange) []CellChange {
+	out := make([]CellChange, len(changes))
+	for i, ch := range changes {
+		ch.From.Output, ch.From.Diagnostics = nil, nil
+		ch.To.Output, ch.To.Diagnostics = nil, nil
+		out[i] = ch
+	}
+	return out
 }
 
 var v6IDs = []string{"a", "b"}
@@ -106,7 +120,7 @@ func v6Expect(t *testing.T, cmp Comparison, rec Recommendation, changes ...CellC
 	for _, n := range cmp.Counts {
 		total += n
 	}
-	if cmp.Recommendation != rec || !reflect.DeepEqual(cmp.Changes, changes) || total != len(v6IDs)*len(v6Contract()) {
+	if cmp.Recommendation != rec || !reflect.DeepEqual(v6WithoutEvidence(cmp.Changes), changes) || total != len(v6IDs)*len(v6Contract()) {
 		got, _ := json.Marshal(cmp)
 		t.Fatalf("got %s\nwant recommendation %v, changes %+v", got, rec, changes)
 	}
@@ -143,10 +157,10 @@ func TestV6AC04LostEvidenceInvestigates(t *testing.T) {
 	cand := v6Publish(t, v6Contract(), v6IDs, v6Script{"b": {"r": v6Uneval()}})
 	v6Expect(t, v6Compare(t, base, cand), RecommendInvestigate,
 		v6Change("b", "r", true, TransitionLostEvidence, v6Passing(1), v6Unknown("ERRORED", "UNEVALUABLE")),
-		v6Change("b", "o", false, TransitionLostEvidence, v6Passing(1), Endpoint{CellUnknown, "ERRORED", "SUCCEEDED", v6Ptr(1)}))
+		v6Change("b", "o", false, TransitionLostEvidence, v6Passing(1), Endpoint{Cell: CellUnknown, CaseState: "ERRORED", Status: "SUCCEEDED", Score: v6Ptr(1)}))
 	v6Expect(t, v6Compare(t, cand, base), RecommendShip,
 		v6Change("b", "r", true, TransitionGainedEvidence, v6Unknown("ERRORED", "UNEVALUABLE"), v6Passing(1)),
-		v6Change("b", "o", false, TransitionGainedEvidence, Endpoint{CellUnknown, "ERRORED", "SUCCEEDED", v6Ptr(1)}, v6Passing(1)))
+		v6Change("b", "o", false, TransitionGainedEvidence, Endpoint{Cell: CellUnknown, CaseState: "ERRORED", Status: "SUCCEEDED", Score: v6Ptr(1)}, v6Passing(1)))
 }
 
 func TestV6AC05OptionalRegressionDoesNotBlock(t *testing.T) {
@@ -226,12 +240,12 @@ func TestV6AC09V1ArtifactsCompare(t *testing.T) {
 	}
 	cmp := v6Compare(t, v1("match"), v1("mismatch"))
 	want := []CellChange{v6Change("case-1", "exact_match", true, TransitionRegressed, v6Passing(1), v6Failing(0))}
-	if cmp.Recommendation != RecommendIterate || !reflect.DeepEqual(cmp.Changes, want) {
+	if cmp.Recommendation != RecommendIterate || !reflect.DeepEqual(v6WithoutEvidence(cmp.Changes), want) {
 		t.Fatalf("v1 compare: %+v", cmp)
 	}
 	cmp = v6Compare(t, v1("match"), v1("crash"))
 	want = []CellChange{v6Change("case-1", "exact_match", true, TransitionLostEvidence, v6Passing(1), v6Unknown("ERRORED", "ERRORED"))}
-	if cmp.Recommendation != RecommendInvestigate || !reflect.DeepEqual(cmp.Changes, want) {
+	if cmp.Recommendation != RecommendInvestigate || !reflect.DeepEqual(v6WithoutEvidence(cmp.Changes), want) {
 		t.Fatalf("v1 crash compare: %+v", cmp)
 	}
 	// A v2 run whose retained contract equals v1's synthetic one compares
@@ -390,5 +404,121 @@ func TestV6StatusOnlyChangeWithinUnknownNotListed(t *testing.T) {
 	v6Expect(t, cmp, RecommendInvestigate)
 	if cmp.Counts != (TransitionCounts{TransitionUnchanged: 4}) {
 		t.Fatalf("counts %+v", cmp.Counts)
+	}
+}
+
+// v7Publish runs cases a, b, c and d under a required exact_match and an
+// optional custom judge. overrides change what the target prints, and the
+// judge fails on the cases in judgeFails.
+func v7Publish(t *testing.T, overrides []string, judgeFails ...string) string {
+	t.Helper()
+	judge := RegisteredScorer{Implementation: "v7/judge@1", Evaluate: func(_ context.Context, in ScorerInput) (AssessmentCandidate, error) {
+		if slices.Contains(judgeFails, in.CaseID) {
+			return AssessmentCandidate{}, errors.New("judge unavailable")
+		}
+		return v6Scored(1), nil
+	}}
+	raw, _ := json.Marshal(map[string]any{
+		"version": 4, "cases": v7Cases("a", "b", "c", "d"), "target": v7Target(t, overrides...),
+		"scorers": []any{
+			map[string]any{"id": "exact", "kind": "exact_match", "threshold": 1, "required": true},
+			map[string]any{"id": "judge", "kind": "custom", "implementation": "v7/judge@1", "threshold": 0.5, "required": false},
+		},
+		"execution": map[string]any{"concurrency": 4, "scorer_max_attempts": 1},
+	})
+	dir := filepath.Join(t.TempDir(), "artifact")
+	if o := RunJSONWithScorers(context.Background(), raw, dir, map[string]RegisteredScorer{"judge": judge}); o.State != "COMPLETED" {
+		t.Fatalf("run: %+v", o)
+	}
+	return dir
+}
+
+func v7View(form OutputForm, printed []byte) *OutputView {
+	return &OutputView{Form: form, Size: int64(len(printed)), SHA256: v7Sum(printed), Complete: true, Preview: string(printed)}
+}
+
+func TestV7AC07CompareShowsWhy(t *testing.T) {
+	base := v7Publish(t, nil)
+	cand := v7Publish(t, []string{"a:spaced", "b:no", "c:partial", "d:oversized"}, "b")
+	cmp := v6Compare(t, base, cand)
+	yes, no, oversized := v7View(OutputJSON, v7Printed["json"]), v7View(OutputJSON, v7Printed["no"]), v7Printed["oversized"]
+	with := func(e Endpoint, out *OutputView, diagnostics ...CellDiagnostic) Endpoint {
+		e.Output, e.Diagnostics = out, diagnostics
+		return e
+	}
+	targetFailed := CellDiagnostic{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: "target process failed"}
+	tooLarge := CellDiagnostic{Code: "TARGET_EXECUTION_ERROR", Scope: "CASE", Message: "target output exceeds V1 size limit"}
+	judgeFailed := CellDiagnostic{Code: "SCORER_OPERATION_ERROR", Scope: "SCORER", Message: "Scorer operation failed"}
+	partial := v7View(OutputMalformed, v7Printed["partial"])
+	truncated := &OutputView{Form: OutputOversized, Size: int64(len(oversized)), SHA256: v7Sum(oversized), Truncated: true, Preview: string(oversized[:outputPreviewBytes])}
+	errored := v6Unknown("ERRORED", "ERRORED")
+	want := []CellChange{
+		v6Change("b", "exact", true, TransitionRegressed, with(v6Passing(1), yes), with(v6Failing(0), no)),
+		v6Change("b", "judge", false, TransitionLostEvidence, with(v6Passing(1), yes), with(v6Unknown("SCORED", "ERRORED"), no, judgeFailed)),
+		v6Change("c", "exact", true, TransitionLostEvidence, with(v6Passing(1), yes), with(errored, partial, targetFailed)),
+		v6Change("c", "judge", false, TransitionLostEvidence, with(v6Passing(1), yes), with(errored, partial, targetFailed)),
+		v6Change("d", "exact", true, TransitionLostEvidence, with(v6Passing(1), yes), with(errored, truncated, tooLarge)),
+		v6Change("d", "judge", false, TransitionLostEvidence, with(v6Passing(1), yes), with(errored, truncated, tooLarge)),
+	}
+	if cmp.Recommendation != RecommendInvestigate || !reflect.DeepEqual(cmp.Changes, want) {
+		got, _ := json.MarshalIndent(cmp.Changes, "", " ")
+		t.Fatalf("changes %s", got)
+	}
+
+	old := filepath.Join("..", "..", "cmd", "evalkit", "testdata", "v0.6.0", "artifacts", "v2-pass")
+	raw, _ := json.Marshal(map[string]any{
+		"version": 2, "cases": v7Cases("case-1", "case-2"), "target": v7Target(t, "case-2:no"),
+		"scorers": []any{
+			map[string]any{"id": "exact-required", "kind": "exact_match", "threshold": 1, "required": true},
+			map[string]any{"id": "exact-observational", "kind": "exact_match", "threshold": 0.5, "required": false},
+		},
+	})
+	_, current := v7Run(t, raw)
+	mixed := v6Compare(t, old, current)
+	want = []CellChange{
+		v6Change("case-2", "exact-required", true, TransitionRegressed, v6Passing(1), with(v6Failing(0), no)),
+		v6Change("case-2", "exact-observational", false, TransitionRegressed, v6Passing(1), with(v6Failing(0), no)),
+	}
+	if !reflect.DeepEqual(mixed.Changes, want) {
+		got, _ := json.MarshalIndent(mixed.Changes, "", " ")
+		t.Fatalf("v0.6.0 baseline against a V7 candidate: %s", got)
+	}
+}
+
+// JSON escapes C0 controls such as ESC itself; the preview replaces DEL and
+// the C1 range, which JSON would otherwise emit raw into CI logs.
+func TestV7PreviewIsBoundedValidText(t *testing.T) {
+	a := func(n int) string { return strings.Repeat("a", n) }
+	for _, c := range []struct {
+		in, preview string
+		whole       bool
+	}{
+		{"", "", true},
+		{a(outputPreviewBytes), a(outputPreviewBytes), true},
+		{a(outputPreviewBytes + 1), a(outputPreviewBytes), false},
+		{a(outputPreviewBytes-2) + "é", a(outputPreviewBytes-2) + "é", true},
+		{a(outputPreviewBytes-1) + "é", a(outputPreviewBytes - 1), false},
+		{a(outputPreviewBytes-2) + "€", a(outputPreviewBytes - 2), false},
+		{a(outputPreviewBytes-3) + "😀", a(outputPreviewBytes - 3), false},
+		{a(outputPreviewBytes-4) + "😀", a(outputPreviewBytes-4) + "😀", true},
+		{"ok \xff", "ok �", false},
+		{"csi \u009b2J del \x7f", "csi �2J del �", false},
+		{"esc \x1b[31m", "esc \x1b[31m", true},
+	} {
+		if preview, whole := previewOf([]byte(c.in)); preview != c.preview || whole != c.whole {
+			t.Errorf("previewOf(%d bytes ending %q) = %d bytes ending %q, %v; want %d bytes, %v",
+				len(c.in), c.in[max(0, len(c.in)-4):], len(preview), preview[max(0, len(preview)-4):], whole, len(c.preview), c.whole)
+		}
+	}
+}
+
+// Past 8192 cases, or after the size ladder, a truncated output can keep
+// fewer bytes than the preview shows. Its preview is all it kept, which is
+// still not all the target wrote.
+func TestV7ShortTruncatedOutputIsNotComplete(t *testing.T) {
+	kept := []byte(`{"answer":`)
+	m := &measuredRun{cases: []V2CaseResult{{Output: &TargetOutput{Form: OutputJSON, Size: 4096, SHA256: v7Sum(nil), Truncated: true, Bytes: kept}}}, diagnostics: make([][]Diagnostic, 1)}
+	if got := m.explain(0, "exact", Endpoint{}).Output; got.Complete || !got.Truncated || got.Preview != string(kept) {
+		t.Fatalf("%+v", got)
 	}
 }

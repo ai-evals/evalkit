@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,8 +42,9 @@ var requiredSets = [][2]bool{{true, false}, {false, true}, {true, true}} // conf
 var attemptBudgets = []int{1, 2}
 
 // The target is /bin/sh echoing the request line, so exact_match "match"
-// cases expect the request itself. Case IDs starting with "tfail" exit 1.
-const targetScript = `IFS= read -r line; case "$line" in *'"case_id":"tfail'*) exit 3;; esac; printf '%s\n' "$line"`
+// cases expect the request itself. Case IDs starting with "tfail" print the
+// 7 bytes "partial" and exit 3, so a failed target has stdout to retain.
+const targetScript = `IFS= read -r line; case "$line" in *'"case_id":"tfail'*) printf partial; exit 3;; esac; printf '%s\n' "$line"`
 
 type runShape struct {
 	kinds    [2]string // "custom" | "exact_match"
@@ -315,11 +317,97 @@ func checkRun(t *testing.T, s runShape, cases []caseSpec, concurrency int) []str
 			}
 		}
 	}
+	bad = append(bad, checkEvidence(where, s, cases, o)...)
 	v, err := VerifyArtifact(dir)
 	if err != nil {
 		bad = append(bad, fmt.Sprintf("%s published artifact rejected by VerifyArtifact: %v", where, err))
 	} else if v.Quality == nil || *v.Quality != *o.Quality {
 		bad = append(bad, fmt.Sprintf("%s VerifyArtifact verdict %v != reported %s", where, v.Quality, *o.Quality))
+	}
+	return bad
+}
+
+// ---- P1/P2 evidence: retained output and diagnostic attribution ------------
+
+// oracleOutput is what a case retains, written from the stdin protocol
+// ({"case_id","input"} and a newline, echoed back): the request line, or
+// the "partial" a failing target printed. An INVALID case never ran.
+func oracleOutput(c caseSpec) (want []byte, form string, retained bool) {
+	switch {
+	case c.dup:
+		return nil, "", false
+	case c.tfail:
+		return []byte("partial"), "MALFORMED", true
+	}
+	return []byte(fmt.Sprintf(`{"case_id":%q,"input":{"n":1}}`+"\n", c.id)), "JSON", true
+}
+
+// oracleDiagnostics is one diagnostic per INVALID case, failed target and
+// ERRORED observation, in dataset and then scorer order, each naming its
+// case ordinal and ID, and its scorer for SCORER scope. Messages are the
+// static texts, so scorer error text never appears. UNEVALUABLE has none:
+// its reason is on the observation.
+func oracleDiagnostics(s runShape, cases []caseSpec) []string {
+	var out []string
+	for i, c := range cases {
+		switch {
+		case c.dup:
+			out = append(out, fmt.Sprintf("DATASET_INVALID_CASE/CASE/%d/%s//Invalid case identity or JSON input", i, c.id))
+		case c.tfail:
+			out = append(out, fmt.Sprintf("TARGET_EXECUTION_ERROR/CASE/%d/%s//target process failed", i, c.id))
+		default:
+			for j := 0; j < 2; j++ {
+				if oracleScorer(s.kinds[j], c.beh[j], s.attempts).status != "ERRORED" {
+					continue
+				}
+				code, message := "SCORER_OPERATION_ERROR", "Scorer operation failed"
+				if c.beh[j] == "invalid" {
+					code, message = "SCORER_RESULT_INVALID", "Scorer returned an invalid assessment"
+				}
+				out = append(out, fmt.Sprintf("%s/SCORER/%d/%s/%s/%s", code, i, c.id, scorerID(j), message))
+			}
+		}
+	}
+	return out
+}
+
+func describeDiagnostics(ds []Diagnostic) []string {
+	var out []string
+	for _, d := range ds {
+		if d.Subject == nil {
+			out = append(out, fmt.Sprintf("%s/%s/unattributed/%s", d.Code, d.Scope, d.Message))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s/%s/%d/%s/%s/%s", d.Code, d.Scope, d.Subject.CaseIndex, d.Subject.CaseID, d.Subject.ScorerID, d.Message))
+	}
+	return out
+}
+
+// checkEvidence compares one run's retained evidence to the oracles. P2's
+// duplicate pair shares an ID, so only the case index tells them apart.
+func checkEvidence(where string, s runShape, cases []caseSpec, o Outcome) []string {
+	var bad []string
+	if o.RetainedOutput != OutputsRetained {
+		bad = append(bad, fmt.Sprintf("%s EVIDENCE: retained_output %q, contract says RETAINED", where, o.RetainedOutput))
+	}
+	for i, c := range cases {
+		got := o.Cases[i].Output
+		want, form, retained := oracleOutput(c)
+		switch {
+		case !retained && got != nil:
+			bad = append(bad, fmt.Sprintf("%s EVIDENCE: case %d (%s) retained %s/%d, contract says none", where, i, c.id, got.Form, got.Size))
+		case retained && got == nil:
+			bad = append(bad, fmt.Sprintf("%s EVIDENCE: case %d (%s) retained no output, contract says %q", where, i, c.id, want))
+		case retained:
+			sum := sha256.Sum256(want)
+			if string(got.Form) != form || got.Size != int64(len(want)) || got.SHA256 != hex.EncodeToString(sum[:]) || got.Truncated || string(got.Bytes) != string(want) {
+				bad = append(bad, fmt.Sprintf("%s EVIDENCE: case %d (%s) retained %s/%d/truncated=%v/%q, contract says %s/%d/false/%q",
+					where, i, c.id, got.Form, got.Size, got.Truncated, got.Bytes, form, len(want), want))
+			}
+		}
+	}
+	if got, want := describeDiagnostics(o.Diagnostics), oracleDiagnostics(s, cases); !slices.Equal(got, want) {
+		bad = append(bad, fmt.Sprintf("%s EVIDENCE: diagnostics %v, contract says %v", where, got, want))
 	}
 	return bad
 }
@@ -560,7 +648,7 @@ func TestFormalP4InspectorVerdict(t *testing.T) {
 	}
 	thrDomain := []float64{-0.5, 0, 0.5, 1, 1.5}
 	classes := map[string]string{}
-	checked := 0
+	checked, accepted := 0, 0
 	for _, bc := range bases {
 		raw, custom, _ := buildRun(t, base, []caseSpec{bc}, 1)
 		dir := filepath.Join(t.TempDir(), "artifact")
@@ -569,6 +657,18 @@ func TestFormalP4InspectorVerdict(t *testing.T) {
 		}
 		runRaw, _ := os.ReadFile(filepath.Join(dir, "run.json"))
 		reportRaw, _ := os.ReadFile(filepath.Join(dir, "report.json"))
+		// P4 skips every rewrite VerifyArtifact refuses, so a round trip that
+		// broke some other rule would make all of them skips.
+		var identity Outcome
+		var identityReport map[string]any
+		if json.Unmarshal(runRaw, &identity) != nil || json.Unmarshal(reportRaw, &identityReport) != nil {
+			t.Fatal("base artifact does not decode")
+		}
+		identityDir := filepath.Join(t.TempDir(), "identity")
+		writeArtifact(t, identityDir, identity, identityReport)
+		if _, err := VerifyArtifact(identityDir); err != nil {
+			t.Fatalf("P4 would pass vacuously: the unmodified rewrite of base %v is refused: %v", bc.beh, err)
+		}
 		for _, r0 := range []bool{true, false} {
 			for _, r1 := range []bool{true, false} {
 				for _, t0 := range thrDomain {
@@ -591,6 +691,7 @@ func TestFormalP4InspectorVerdict(t *testing.T) {
 							if err != nil {
 								continue
 							}
+							accepted++
 							contractOK := (r0 || r1) && inUnit(t0) && inUnit(t1)
 							want := absOracle(run.Cases, run.Measurement.Scorers)
 							if !contractOK || *v.Quality != want {
@@ -617,7 +718,10 @@ func TestFormalP4InspectorVerdict(t *testing.T) {
 		bad = append(bad, v)
 	}
 	report(t, bad)
-	t.Logf("checked %d rewritten artifacts", checked)
+	if accepted == 0 {
+		t.Error("P4 accepted no rewrite, so it checked nothing")
+	}
+	t.Logf("checked %d rewritten artifacts, %d accepted", checked, accepted)
 }
 
 func inUnit(x float64) bool { return x >= 0 && x <= 1 }

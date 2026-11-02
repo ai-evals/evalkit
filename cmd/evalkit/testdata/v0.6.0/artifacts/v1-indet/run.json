@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "run_id": "d50e401b03ec1d0ce4bd4d23dc30dd2b",
+  "state": "COMPLETED",
+  "quality": "INDETERMINATE",
+  "config_digest": "8d46e099fd1a5dc25d9460e3c311cc7df737615af419863550abe39491968c00",
+  "case": {
+    "id": "case-2",
+    "target_status": "ERRORED",
+    "scorer_status": "ERRORED"
+  },
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact_match",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "code": "TARGET_EXECUTION_ERROR",
+      "scope": "CASE",
+      "message": "target process failed"
+    }
+  ],
+  "artifact_dir": "artifacts/v1-indet"
+}

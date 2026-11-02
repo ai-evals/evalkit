@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "run_id": "a9af8f3b936c8da6e5183fda679ca769",
+  "state": "COMPLETED",
+  "quality": "FAIL",
+  "config_digest": "c372ebe073af1eb5b23f41b91ba661be077b01f201bffa6ff0fa9b0c629e943e",
+  "case": {
+    "id": "case-2",
+    "target_status": "SUCCEEDED",
+    "scorer_status": "SUCCEEDED",
+    "score": 0
+  },
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact_match",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      }
+    ]
+  },
+  "artifact_dir": "artifacts/v1-fail"
+}

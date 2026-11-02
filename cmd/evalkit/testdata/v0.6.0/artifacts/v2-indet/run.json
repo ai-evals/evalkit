@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "run_id": "6d456974e5022654ae94098bcc6c6b1f",
+  "state": "COMPLETED",
+  "quality": "INDETERMINATE",
+  "config_digest": "06830e2fdeba9f18593baa50311df5320bc7207b35b0489dae5758dae4d30464",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        },
+        {
+          "id": "exact-observational",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "ERRORED",
+      "target_status": "ERRORED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "ERRORED"
+        },
+        {
+          "id": "exact-observational",
+          "status": "ERRORED"
+        }
+      ]
+    }
+  ],
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-1",
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact-required",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      },
+      {
+        "id": "exact-observational",
+        "kind": "exact_match",
+        "threshold": 0.5,
+        "required": false
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "code": "TARGET_EXECUTION_ERROR",
+      "scope": "CASE",
+      "message": "target process failed"
+    }
+  ],
+  "artifact_dir": "artifacts/v2-indet"
+}

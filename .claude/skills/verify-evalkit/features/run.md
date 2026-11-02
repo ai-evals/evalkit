@@ -22,7 +22,7 @@ Preconditions:
 
 - `$H doctor <id>` is `HEALTHY`.
 
-- **v1 pass.** Run `C=$($H config <id> v1 pass v1-pass)`, then `$H run <id> v1-pass -- run --config "$C" --artifact-dir art-v1-pass`. Exit `0`, `jq -r .state,.quality` gives `COMPLETED` and `PASS`, and `.cases[0].scorers[0].score` is `1`.
+- **v1 pass.** Run `C=$($H config <id> v1 pass v1-pass)`, then `$H run <id> v1-pass -- run --config "$C" --artifact-dir art-v1-pass`. Exit `0`, `jq -r .state,.quality` gives `COMPLETED` and `PASS`, and `.case.score` is `1`. A v1 outcome has one `case`, not a `cases` list.
 - **v2 pass with two scorers.** Run `C=$($H config <id> v2 pass v2-pass)`, then `$H run <id> v2-pass -- run --config "$C" --artifact-dir art-v2-pass`. Exit `0`. `jq -c '[.cases[].scorers[].id]'` lists `exact-required` and `exact-observational` for both cases.
 - **v2 fail.** Run `C=$($H config <id> v2 fail v2-fail)`, then `$H run <id> v2-fail -- run --config "$C" --artifact-dir art-v2-fail`. Exit `1`, `.quality` is `FAIL`, and `case-2`'s `exact-required` score is `0` while `case-1`'s is `1`.
 - **v3 bounded execution.** Run `C=$($H config <id> v3 pass v3-pass)`, then `$H run <id> v3-pass -- run --config "$C" --artifact-dir art-v3-pass`. Exit `0`. `jq -c '[.cases[].id]'` is `["case-1","case-2"]`, in dataset order.
@@ -35,4 +35,5 @@ Preconditions:
 - The example target always answers `{"answer":"yes"}`. FAIL needs a changed `expected`, not a changed target.
 - A target gets only `PATH` in its environment and a temp CWD. A target that needs other env vars errors, which shows up as INDETERMINATE.
 - Exit `3` and exit `2` are different verdicts. INDETERMINATE is a completed run, and `2` is a framework failure.
+- From V7 the run stdout is the record in `run.json`, so it carries each case's base64 `output` and `retained_output`. With many cases or large outputs, stdout grows by up to about 11 MiB. [artifacts.md](./artifacts.md) covers the retained output.
 - A config with an unsupported `version` reports `CONFIG_INVALID` with `unsupported configuration version N; supported versions are 1, 2, 3 and 4`. A config without `version` reports `configuration version is required`.

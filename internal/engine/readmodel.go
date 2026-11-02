@@ -53,6 +53,7 @@ type verifiedRun struct {
 	runID        string
 	quality      Quality
 	configDigest string
+	retention    OutputRetention
 	// measured is nil exactly when the artifact predates retained
 	// measurement (v0.1-v0.4).
 	measured *measuredRun
@@ -66,10 +67,14 @@ type verifiedRun struct {
 //   - every observation satisfies validObservedScore;
 //   - qualityOfCases(cases, contract.Scorers) is the run's quality.
 //
-// So cell (i, j) is cases[i].Scorers[j] under contract.Scorers[j].
+// So cell (i, j) is cases[i].Scorers[j] under contract.Scorers[j]. Its
+// retained output is cases[i].Output, and diagnostics[i] are the diagnostics
+// the run attributed to case i, in run order. Both are empty for artifacts
+// published before V7.
 type measuredRun struct {
-	contract MeasurementDefinition
-	cases    []V2CaseResult
+	contract    MeasurementDefinition
+	cases       []V2CaseResult
+	diagnostics [][]Diagnostic
 }
 
 // loadVerified is the one reader of a published artifact. A cancelled
@@ -91,7 +96,7 @@ func loadVerified(ctx context.Context, dir string, refusal ReadError) (verifiedR
 	if !ok {
 		return verifiedRun{}, &refusal
 	}
-	run := verifiedRun{runID: o.RunID, quality: q, configDigest: o.ConfigDigest}
+	run := verifiedRun{runID: o.RunID, quality: q, configDigest: o.ConfigDigest, retention: o.RetainedOutput}
 	if o.Measurement == nil {
 		return run, nil
 	}
@@ -108,7 +113,14 @@ func loadVerified(ctx context.Context, dir string, refusal ReadError) (verifiedR
 	if qualityOfCases(cases, o.Measurement.Scorers) != q.String() {
 		return verifiedRun{}, &refusal
 	}
-	run.measured = &measuredRun{contract: *o.Measurement, cases: cases}
+	// VerifyArtifact checked every subject's index against these cases.
+	byCase := make([][]Diagnostic, len(cases))
+	for _, d := range o.Diagnostics {
+		if d.Subject != nil {
+			byCase[d.Subject.CaseIndex] = append(byCase[d.Subject.CaseIndex], d)
+		}
+	}
+	run.measured = &measuredRun{contract: *o.Measurement, cases: cases, diagnostics: byCase}
 	return run, nil
 }
 
@@ -126,14 +138,21 @@ func observedCases(o Outcome) []V2CaseResult {
 	if o.Case.ScorerStatus == "SUCCEEDED" {
 		state = "SCORED"
 	}
+	// verifyRetainedEvidence lifts v1 artifacts whose measurement was
+	// deleted, where the scorer has no retained ID.
+	scorerID := ""
+	if o.Measurement != nil {
+		scorerID = o.Measurement.Scorers[0].ID
+	}
 	return []V2CaseResult{{
 		ID:           o.Case.ID,
 		State:        state,
 		TargetStatus: o.Case.TargetStatus,
 		Scorers: []ScorerObservation{{
-			ID:     o.Measurement.Scorers[0].ID,
+			ID:     scorerID,
 			Status: o.Case.ScorerStatus,
 			Score:  o.Case.Score,
 		}},
+		Output: o.Case.Output,
 	}}
 }
