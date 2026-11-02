@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +22,8 @@ import (
 const v7StderrSecret = "evalkit-v7-stderr-secret"
 
 // v7Printed is exactly what TestV7TargetHelper writes to stdout for each
-// case ID, and v7Exit its exit status. Any other ID prints {"answer":"yes"}.
+// case ID up to an optional "#suffix", and v7Exit its exit status. Any other
+// ID prints {"answer":"yes"}.
 var v7Printed = map[string][]byte{
 	"json":        []byte("{\"answer\":\"yes\"}\n"),
 	"no":          []byte("{\"answer\":\"no\"}\n"),
@@ -50,7 +54,8 @@ func TestV7TargetHelper(t *testing.T) {
 	if strings.HasPrefix(req.CaseID, "stderr") {
 		os.Stderr.WriteString(v7StderrSecret + "\n")
 	}
-	out, ok := v7Printed[req.CaseID]
+	behavior, _, _ := strings.Cut(req.CaseID, "#")
+	out, ok := v7Printed[behavior]
 	if !ok {
 		out = v7Printed["json"]
 	}
@@ -58,7 +63,7 @@ func TestV7TargetHelper(t *testing.T) {
 	if req.CaseID == "sleep" {
 		time.Sleep(10 * time.Second)
 	}
-	os.Exit(v7Exit[req.CaseID])
+	os.Exit(v7Exit[behavior])
 }
 
 func v7Target(t *testing.T) map[string]any {
@@ -317,5 +322,317 @@ func TestV7AC09CancellationRetainsNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("cancelled run published: %v", err)
+	}
+}
+
+// v7Synthetic is a COMPLETED v2-shaped Outcome that VerifyArtifact accepts:
+// n passing cases that each printed printed, and a CASE diagnostic on case 0
+// whose message pads run.json by pad bytes.
+func v7Synthetic(n int, printed []byte, pad int) Outcome {
+	quality := "PASS"
+	o := Outcome{SchemaVersion: 1, RunID: "synthetic", State: "COMPLETED", Quality: &quality, ConfigDigest: "d", ArtifactDir: "a"}
+	o.Measurement = &MeasurementDefinition{SchemaVersion: 1, Scorers: []V2Scorer{{ID: "exact", Kind: "exact_match", Threshold: 1, Required: true}}}
+	for i := range n {
+		id := fmt.Sprintf("c%d", i)
+		o.Measurement.CaseIDs = append(o.Measurement.CaseIDs, id)
+		o.Cases = append(o.Cases, V2CaseResult{ID: id, State: "SCORED", TargetStatus: "SUCCEEDED",
+			Scorers: []ScorerObservation{{ID: "exact", Status: "SUCCEEDED", Score: v6Ptr(1)}}, Output: v7Whole(OutputJSON, printed)})
+	}
+	o.Diagnostics = []Diagnostic{caseDiagnostic("PAD", strings.Repeat("x", pad), 0, "c0")}
+	return o
+}
+
+func v7Size(t *testing.T, o Outcome, retention OutputRetention) int {
+	t.Helper()
+	o.RetainedOutput = retention
+	b, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(b) + 1
+}
+
+func TestV7AC05BudgetLadder(t *testing.T) {
+	for n, want := range map[int]int{1: maxTargetBytes, 8: maxTargetBytes, 9: 932067, 100: 83886, 1000: 8388, 40000: 209} {
+		if got := retentionAllowance(n); got != want {
+			t.Errorf("retentionAllowance(%d) = %d, want %d", n, got, want)
+		}
+	}
+	limit := int(maxEvidenceFileBytes)
+	small := []byte(`"` + strings.Repeat("s", 98) + `"`)
+	huge := append(append([]byte{'"'}, bytes.Repeat([]byte{'h'}, maxTargetBytes-2)...), '"')
+	skeleton := func(o Outcome) Outcome { return mapOutputs(o, keepPrefix(0)) }
+	dropped := func(o Outcome) Outcome { return mapOutputs(o, dropOutput) }
+	base := v7Synthetic(4, small, 0)
+	padSkeleton := limit - v7Size(t, skeleton(base), OutputsTrimmed) - 100
+	gap := v7Size(t, skeleton(base), OutputsTrimmed) - v7Size(t, dropped(base), OutputsNone)
+	padDropped := limit - v7Size(t, dropped(base), OutputsNone) - gap/2
+
+	for name, tc := range map[string]struct {
+		o         Outcome
+		retention OutputRetention
+		kept      func(t *testing.T, kept []int)
+	}{
+		"as is": {v7Synthetic(4, small, 0), OutputsRetained, func(t *testing.T, kept []int) {
+			if !slices.Equal(kept, []int{100, 100, 100, 100}) {
+				t.Errorf("kept %v", kept)
+			}
+		}},
+		"common prefix": {v7Synthetic(20, huge, 0), OutputsTrimmed, func(t *testing.T, kept []int) {
+			if kept[0] < 600_000 || kept[0] >= maxTargetBytes || slices.Max(kept) != slices.Min(kept) {
+				t.Errorf("kept %v", kept)
+			}
+		}},
+		"metadata only": {v7Synthetic(4, small, padSkeleton), OutputsTrimmed, func(t *testing.T, kept []int) {
+			if !slices.Equal(kept, []int{0, 0, 0, 0}) {
+				t.Errorf("kept %v", kept)
+			}
+		}},
+		"no outputs": {v7Synthetic(4, small, padDropped), OutputsNone, func(t *testing.T, kept []int) {
+			if kept != nil {
+				t.Errorf("kept %v", kept)
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "artifact")
+			sealed, err := publish(context.Background(), dir, tc.o)
+			if err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+			var kept []int
+			for _, c := range sealed.Cases {
+				if c.Output != nil {
+					kept = append(kept, len(c.Output.Bytes))
+					if want := tc.o.Cases[0].Output; c.Output.Size != want.Size || c.Output.SHA256 != want.SHA256 || c.Output.Form != want.Form ||
+						!bytes.HasPrefix(want.Bytes, c.Output.Bytes) || c.Output.Truncated != (len(c.Output.Bytes) < len(want.Bytes)) {
+						t.Errorf("trimmed output %s is not a prefix of %s", v7Describe(c.Output), v7Describe(want))
+					}
+				}
+			}
+			tc.kept(t, kept)
+			untrimmed := dropped(sealed)
+			untrimmed.RetainedOutput = ""
+			if sealed.RetainedOutput != tc.retention || !reflect.DeepEqual(untrimmed, dropped(tc.o)) {
+				t.Errorf("sealed retention %s, or trimming changed more than outputs", sealed.RetainedOutput)
+			}
+			for _, name := range []string{"run.json", "report.json", "commit.json"} {
+				if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Size() > maxEvidenceFileBytes {
+					t.Errorf("%s: %v", name, err)
+				}
+			}
+			verified, err := VerifyArtifact(dir)
+			if err != nil || !reflect.DeepEqual(verified, sealed) {
+				t.Fatalf("sealed record is not what run.json holds: %v", err)
+			}
+			if view, err := InspectArtifact(context.Background(), dir); err != nil || view.RetainedOutput != tc.retention {
+				t.Errorf("inspect %+v %v", view, err)
+			}
+			again, _, _ := encodeRunEvidence(tc.o)
+			first, _ := os.ReadFile(filepath.Join(dir, "run.json"))
+			if !bytes.Equal(first, again) {
+				t.Error("encoding is not deterministic")
+			}
+		})
+	}
+
+	t.Run("too large", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "artifact")
+		over := v7Synthetic(4, small, limit-v7Size(t, dropped(base), OutputsNone)+1)
+		if _, err := publish(context.Background(), dir, over); !errors.Is(err, errRunEvidenceTooLarge) {
+			t.Fatalf("publish: %v", err)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("published: %v", err)
+		}
+	})
+
+	t.Run("too large end to end", func(t *testing.T) {
+		scorers := make([]any, 20)
+		for j := range scorers {
+			scorers[j] = map[string]any{"id": fmt.Sprintf("s%02d", j), "kind": "exact_match", "threshold": 1, "required": true}
+		}
+		ids := make([]string, 10000)
+		for i := range ids {
+			ids[i] = "dup"
+		}
+		raw, _ := json.Marshal(map[string]any{"version": 2, "cases": v7Cases(ids...), "target": v7Target(t), "scorers": scorers})
+		dir := filepath.Join(t.TempDir(), "artifact")
+		o := RunJSON(context.Background(), raw, dir)
+		if last := o.Diagnostics[len(o.Diagnostics)-1]; o.State != "FAILED" || last.Code != "ARTIFACT_COMMIT_FAILED" || len(o.Cases) != len(ids) {
+			t.Fatalf("state %s, last diagnostic %+v, %d cases", o.State, last, len(o.Cases))
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("an artifact inspect cannot read was published: %v", err)
+		}
+	})
+}
+
+// v7Base is a v4 run whose artifact holds every kind of retained evidence:
+// a scored case, a duplicate pair, a failed target and a scorer error.
+func v7Base(t *testing.T) string {
+	t.Helper()
+	judge := RegisteredScorer{Implementation: "v7/judge@1", Evaluate: func(_ context.Context, in ScorerInput) (AssessmentCandidate, error) {
+		if in.CaseID == "b" {
+			return AssessmentCandidate{}, errors.New("judge unavailable")
+		}
+		return v6Scored(1), nil
+	}}
+	raw, _ := json.Marshal(map[string]any{
+		"version": 4, "cases": v7Cases("json", "dup", "dup", "partial", "b"), "target": v7Target(t),
+		"scorers": []any{
+			map[string]any{"id": "exact", "kind": "exact_match", "threshold": 1, "required": true},
+			map[string]any{"id": "judge", "kind": "custom", "implementation": "v7/judge@1", "threshold": 0.5, "required": false},
+		},
+		"execution": map[string]any{"concurrency": 2, "scorer_max_attempts": 1},
+	})
+	dir := filepath.Join(t.TempDir(), "artifact")
+	if o := RunJSONWithScorers(context.Background(), raw, dir, map[string]RegisteredScorer{"judge": judge}); o.State != "COMPLETED" {
+		t.Fatalf("run: %+v", o)
+	}
+	return dir
+}
+
+func TestV7AC11VerifierRefusesImpossibleEvidence(t *testing.T) {
+	base := v7Base(t)
+	cases := func(run map[string]any) []any { return run["cases"].([]any) }
+	output := func(run map[string]any, i int) map[string]any {
+		return cases(run)[i].(map[string]any)["output"].(map[string]any)
+	}
+	subject := func(run map[string]any, i int) map[string]any {
+		return run["diagnostics"].([]any)[i].(map[string]any)["subject"].(map[string]any)
+	}
+	b64 := func(b string) string { return base64.StdEncoding.EncodeToString([]byte(b)) }
+	stripSubjects := func(run map[string]any) {
+		for _, d := range run["diagnostics"].([]any) {
+			delete(d.(map[string]any), "subject")
+		}
+	}
+	stripOutputs := func(run map[string]any) {
+		for _, c := range cases(run) {
+			delete(c.(map[string]any), "output")
+		}
+	}
+	for name, edit := range map[string]func(run, report map[string]any){
+		"unknown form":            func(run, _ map[string]any) { output(run, 0)["form"] = "XML" },
+		"missing form":            func(run, _ map[string]any) { delete(output(run, 0), "form") },
+		"bytes longer than size":  func(run, _ map[string]any) { output(run, 0)["size"] = 16 },
+		"size beyond whole bytes": func(run, _ map[string]any) { output(run, 0)["size"] = 18 },
+		"whole output truncated":  func(run, _ map[string]any) { output(run, 0)["truncated"] = true },
+		"other bytes":             func(run, _ map[string]any) { output(run, 0)["bytes"] = b64("{\"answer\":\"yeS\"}\n") },
+		"sha256 of other bytes":   func(run, _ map[string]any) { output(run, 0)["sha256"] = v7Sum([]byte("x")) },
+		"sha256 not lowercase": func(run, _ map[string]any) {
+			output(run, 0)["sha256"] = strings.ToUpper(output(run, 0)["sha256"].(string))
+		},
+		"empty form with bytes":   func(run, _ map[string]any) { output(run, 3)["form"] = "EMPTY" },
+		"oversized form in limit": func(run, _ map[string]any) { output(run, 3)["form"] = "OVERSIZED" },
+		"malformed label on json": func(run, _ map[string]any) { output(run, 0)["form"] = "MALFORMED" },
+		"succeeded target with malformed prefix": func(run, _ map[string]any) {
+			o := output(run, 0)
+			o["form"], o["bytes"], o["truncated"] = "MALFORMED", b64("{\"a"), true
+			run["retained_output"] = "TRIMMED"
+		},
+		"output on an invalid case":    func(run, _ map[string]any) { cases(run)[1].(map[string]any)["output"] = output(run, 3) },
+		"executed case without output": func(run, _ map[string]any) { delete(cases(run)[3].(map[string]any), "output") },
+		"retention says whole":         func(run, _ map[string]any) { o := output(run, 0); o["bytes"], o["truncated"] = b64("{"), true },
+		"retention says none":          func(run, _ map[string]any) { run["retained_output"] = "NONE" },
+		"unknown retention":            func(run, _ map[string]any) { run["retained_output"] = "MOST" },
+		"outputs without retention":    func(run, _ map[string]any) { delete(run, "retained_output"); stripSubjects(run) },
+		"subjects without retention":   func(run, _ map[string]any) { delete(run, "retained_output"); stripOutputs(run) },
+		"unattributed diagnostic":      func(run, _ map[string]any) { delete(run["diagnostics"].([]any)[0].(map[string]any), "subject") },
+		"run diagnostic": func(run, _ map[string]any) {
+			run["diagnostics"].([]any)[0].(map[string]any)["scope"] = "RUN"
+		},
+		"case index out of range":       func(run, _ map[string]any) { subject(run, 0)["case_index"] = 5 },
+		"negative case index":           func(run, _ map[string]any) { subject(run, 0)["case_index"] = -1 },
+		"another case's ID":             func(run, _ map[string]any) { subject(run, 0)["case_id"] = "json" },
+		"case diagnostic with a scorer": func(run, _ map[string]any) { subject(run, 0)["scorer_id"] = "exact" },
+		"unknown scorer":                func(run, _ map[string]any) { subject(run, 3)["scorer_id"] = "nope" },
+		"scorer diagnostic, no scorer":  func(run, _ map[string]any) { delete(subject(run, 3), "scorer_id") },
+		"output in the report": func(_, report map[string]any) {
+			report["cases"].([]any)[0].(map[string]any)["output"] = map[string]any{}
+		},
+		"retention in the report": func(_, report map[string]any) { report["retained_output"] = "RETAINED" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "artifact")
+			if err := os.CopyFS(dir, os.DirFS(base)); err != nil {
+				t.Fatal(err)
+			}
+			v6Rewrite(t, dir, edit)
+			if o, err := VerifyArtifact(dir); err == nil {
+				got, _ := json.Marshal(o)
+				t.Fatalf("accepted %s", got)
+			}
+		})
+	}
+	v6Rewrite(t, base, func(_, _ map[string]any) {})
+	if _, err := VerifyArtifact(base); err != nil {
+		t.Fatalf("an unmodified map round trip is refused, so every refusal above may be vacuous: %v", err)
+	}
+}
+
+func TestV7AC12ReportKeepsV060Shape(t *testing.T) {
+	o, dir := v7Run(t, v7Config(t, 2, "json", "oversized", "dup", "dup"))
+	report, _ := os.ReadFile(filepath.Join(dir, "report.json"))
+	var shape struct {
+		Keys  map[string]json.RawMessage
+		Cases []map[string]json.RawMessage `json:"cases"`
+	}
+	if json.Unmarshal(report, &shape.Keys) != nil || json.Unmarshal(report, &shape) != nil {
+		t.Fatal("report.json does not decode")
+	}
+	if got := slices.Sorted(maps.Keys(shape.Keys)); !slices.Equal(got, []string{"cases", "quality", "run_id"}) {
+		t.Errorf("report keys %v", got)
+	}
+	for _, c := range shape.Cases {
+		if got := slices.Sorted(maps.Keys(c)); !slices.Equal(got, []string{"id", "scorers", "state", "target_status"}) {
+			t.Errorf("report case keys %v", got)
+		}
+	}
+	if o.RetainedOutput != OutputsTrimmed || o.Cases[1].Output == nil || !o.Cases[1].Output.Truncated {
+		t.Errorf("retention %s", o.RetainedOutput)
+	}
+	view, err := InspectArtifact(context.Background(), dir)
+	encoded, _ := json.Marshal(view)
+	if err != nil || !bytes.Contains(encoded, []byte(`"measurement_accounting":"REPORTED_DEFINITION_CONSISTENT","retained_output":"TRIMMED","authenticated_author":false}`)) {
+		t.Errorf("inspect %s %v", encoded, err)
+	}
+	_, whole := v7Run(t, v7Config(t, 1, "json"))
+	if view, err := InspectArtifact(context.Background(), whole); err != nil || view.RetainedOutput != OutputsRetained {
+		t.Errorf("inspect %+v %v", view, err)
+	}
+}
+
+func TestV7AC08ConcurrencyDoesNotChangeArtifacts(t *testing.T) {
+	var ids []string
+	for k := range 4 {
+		for _, b := range []string{"json", "no", "malformed", "partial", "oversized"} {
+			ids = append(ids, fmt.Sprintf("%s#%d", b, k))
+		}
+	}
+	normalized := func(concurrency int) map[string][]byte {
+		o, dir := v7Run(t, v7Config(t, concurrency, ids...))
+		files := map[string][]byte{}
+		for _, name := range []string{"run.json", "report.json"} {
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, varying := range []string{o.RunID, dir, o.ConfigDigest} {
+				raw = bytes.ReplaceAll(raw, []byte(varying), []byte("VARIES"))
+			}
+			files[name] = raw
+		}
+		if o.RetainedOutput != OutputsTrimmed {
+			t.Fatalf("retention %s: the oversized cases should have been cut to the allowance", o.RetainedOutput)
+		}
+		return files
+	}
+	serial, parallel := normalized(1), normalized(16)
+	for name := range serial {
+		if !bytes.Equal(serial[name], parallel[name]) {
+			t.Errorf("%s differs between concurrency 1 and 16", name)
+		}
 	}
 }

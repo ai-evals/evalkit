@@ -31,7 +31,10 @@ type Inspection struct {
 	ConfigDigest          string `json:"config_digest"`
 	Integrity             string `json:"integrity"`
 	MeasurementAccounting string `json:"measurement_accounting"`
-	AuthenticatedAuthor   bool   `json:"authenticated_author"`
+	// RetainedOutput is absent for artifacts published before V7, so their
+	// inspect bytes are unchanged.
+	RetainedOutput      OutputRetention `json:"retained_output,omitempty"`
+	AuthenticatedAuthor bool            `json:"authenticated_author"`
 }
 
 // InspectArtifact never invokes a target, scorer, provider or credential
@@ -48,7 +51,7 @@ func InspectArtifact(ctx context.Context, dir string) (Inspection, error) {
 	return Inspection{
 		SchemaVersion: 1, RunID: run.runID, State: "COMPLETED", Quality: run.quality.String(),
 		ConfigDigest: run.configDigest, Integrity: "SELF_CONSISTENT",
-		MeasurementAccounting: status, AuthenticatedAuthor: false,
+		MeasurementAccounting: status, RetainedOutput: run.retention, AuthenticatedAuthor: false,
 	}, nil
 }
 

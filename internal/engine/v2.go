@@ -312,11 +312,12 @@ dispatch:
 	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
-	if err := publish(ctx, artifactDir, committed); err != nil {
+	sealed, err := publish(ctx, artifactDir, committed)
+	if err != nil {
 		if ctx.Err() != nil {
 			return cancelled(o, ctx.Err())
 		}
 		return fail(o, "ARTIFACT_COMMIT_FAILED", "RUN", "Required artifact publication failed")
 	}
-	return committed
+	return sealed
 }

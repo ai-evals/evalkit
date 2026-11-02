@@ -53,6 +53,7 @@ type verifiedRun struct {
 	runID        string
 	quality      Quality
 	configDigest string
+	retention    OutputRetention
 	// measured is nil exactly when the artifact predates retained
 	// measurement (v0.1-v0.4).
 	measured *measuredRun
@@ -91,7 +92,7 @@ func loadVerified(ctx context.Context, dir string, refusal ReadError) (verifiedR
 	if !ok {
 		return verifiedRun{}, &refusal
 	}
-	run := verifiedRun{runID: o.RunID, quality: q, configDigest: o.ConfigDigest}
+	run := verifiedRun{runID: o.RunID, quality: q, configDigest: o.ConfigDigest, retention: o.RetainedOutput}
 	if o.Measurement == nil {
 		return run, nil
 	}
@@ -126,14 +127,21 @@ func observedCases(o Outcome) []V2CaseResult {
 	if o.Case.ScorerStatus == "SUCCEEDED" {
 		state = "SCORED"
 	}
+	// verifyRetainedEvidence lifts v1 artifacts whose measurement was
+	// deleted, where the scorer has no retained ID.
+	scorerID := ""
+	if o.Measurement != nil {
+		scorerID = o.Measurement.Scorers[0].ID
+	}
 	return []V2CaseResult{{
 		ID:           o.Case.ID,
 		State:        state,
 		TargetStatus: o.Case.TargetStatus,
 		Scorers: []ScorerObservation{{
-			ID:     o.Measurement.Scorers[0].ID,
+			ID:     scorerID,
 			Status: o.Case.ScorerStatus,
 			Score:  o.Case.Score,
 		}},
+		Output: o.Case.Output,
 	}}
 }

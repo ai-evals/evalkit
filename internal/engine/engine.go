@@ -64,8 +64,10 @@ type Outcome struct {
 	Case          *CaseResult            `json:"case,omitempty"`
 	Cases         []V2CaseResult         `json:"cases,omitempty"`
 	Measurement   *MeasurementDefinition `json:"measurement,omitempty"`
-	Diagnostics   []Diagnostic           `json:"diagnostics,omitempty"`
-	ArtifactDir   string                 `json:"artifact_dir,omitempty"`
+	// RetainedOutput is set by publish, so only a sealed record carries it.
+	RetainedOutput OutputRetention `json:"retained_output,omitempty"`
+	Diagnostics    []Diagnostic    `json:"diagnostics,omitempty"`
+	ArtifactDir    string          `json:"artifact_dir,omitempty"`
 }
 
 func newRunID() string {
@@ -286,13 +288,14 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 	if err := ctx.Err(); err != nil {
 		return cancelled(o, err)
 	}
-	if err := publish(ctx, artifactDir, committed); err != nil {
+	sealed, err := publish(ctx, artifactDir, committed)
+	if err != nil {
 		if ctx.Err() != nil {
 			return cancelled(o, ctx.Err())
 		}
 		return fail(o, "ARTIFACT_COMMIT_FAILED", "RUN", "Required artifact publication failed")
 	}
-	return committed
+	return sealed
 }
 
 func cancelled(o Outcome, err error) Outcome {
@@ -320,30 +323,32 @@ func writeSync(name string, contents []byte) error {
 	return err
 }
 
-func publish(ctx context.Context, finalDir string, outcome Outcome) error {
+// publish seals outcome into finalDir and returns the Outcome run.json holds,
+// so the caller prints the record it sealed. It differs from outcome only in
+// retained output, trimmed when it would not fit what VerifyArtifact reads.
+func publish(ctx context.Context, finalDir string, outcome Outcome) (Outcome, error) {
 	if finalDir == "" {
-		return errors.New("artifact output directory required")
+		return Outcome{}, errors.New("artifact output directory required")
 	}
 	finalDir, err := filepath.Abs(finalDir)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	parent := filepath.Dir(finalDir)
 	if _, err := os.Stat(finalDir); err == nil {
-		return errors.New("artifact output already exists")
+		return Outcome{}, errors.New("artifact output already exists")
 	} else if !os.IsNotExist(err) {
-		return err
+		return Outcome{}, err
 	}
 	staging, err := os.MkdirTemp(parent, ".evalkit-stage-")
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	defer os.RemoveAll(staging)
-	runJSON, err := json.MarshalIndent(outcome, "", "  ")
+	runJSON, outcome, err := encodeRunEvidence(outcome)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
-	runJSON = append(runJSON, '\n')
 	var legacyScore *float64
 	if outcome.Case != nil {
 		legacyScore = outcome.Case.Score
@@ -353,16 +358,19 @@ func publish(ctx context.Context, finalDir string, outcome Outcome) error {
 		Quality string         `json:"quality"`
 		Score   *float64       `json:"score,omitempty"`
 		Cases   []V2CaseResult `json:"cases,omitempty"`
-	}{outcome.RunID, *outcome.Quality, legacyScore, outcome.Cases}, "", "  ")
+	}{outcome.RunID, *outcome.Quality, legacyScore, withoutOutputs(outcome.Cases)}, "", "  ")
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	reportJSON = append(reportJSON, '\n')
+	if int64(len(reportJSON)) > maxEvidenceFileBytes {
+		return Outcome{}, errRunEvidenceTooLarge
+	}
 	if err = writeSync(filepath.Join(staging, "run.json"), runJSON); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	if err = writeSync(filepath.Join(staging, "report.json"), reportJSON); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	hRun, hReport := sha256.Sum256(runJSON), sha256.Sum256(reportJSON)
 	commitJSON, err := json.MarshalIndent(struct {
@@ -371,34 +379,37 @@ func publish(ctx context.Context, finalDir string, outcome Outcome) error {
 		ReportSHA256 string `json:"report_sha256"`
 	}{1, hex.EncodeToString(hRun[:]), hex.EncodeToString(hReport[:])}, "", "  ")
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	if err = writeSync(filepath.Join(staging, "commit.json"), append(commitJSON, '\n')); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	stageDir, err := os.Open(staging)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	if err = stageDir.Sync(); err != nil {
 		stageDir.Close()
-		return err
+		return Outcome{}, err
 	}
 	stageDir.Close()
 	if err = ctx.Err(); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	if err = os.Rename(staging, finalDir); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	// The directory rename is the publication point. A concurrent context
 	// cancellation after this point cannot retroactively unpublish the run.
 	parentDir, err := os.Open(parent)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	defer parentDir.Close()
-	return parentDir.Sync()
+	if err = parentDir.Sync(); err != nil {
+		return Outcome{}, err
+	}
+	return outcome, nil
 }
 
 // VerifyArtifact checks the narrow V1 required evidence closure before
@@ -446,13 +457,16 @@ func VerifyArtifact(dir string) (Outcome, error) {
 		return Outcome{}, errors.New("artifact semantic mismatch")
 	}
 	if len(o.Cases) > 0 {
-		if !reflect.DeepEqual(o.Cases, report.Cases) || report.Score != nil || o.Case != nil {
+		if !reflect.DeepEqual(withoutOutputs(o.Cases), report.Cases) || report.Score != nil || o.Case != nil {
 			return Outcome{}, errors.New("artifact case evidence mismatch")
 		}
 	} else if o.Case == nil || ((o.Case.Score == nil) != (report.Score == nil)) || (o.Case.Score != nil && *o.Case.Score != *report.Score) {
 		return Outcome{}, errors.New("artifact score mismatch")
 	}
 	if err := verifyMeasurementAccounting(o); err != nil {
+		return Outcome{}, err
+	}
+	if err := verifyRetainedEvidence(o); err != nil {
 		return Outcome{}, err
 	}
 	return o, nil
