@@ -382,3 +382,13 @@ func TestV6AC12ScoreOnlyChangeListed(t *testing.T) {
 		t.Fatalf("counts %+v", cmp.Counts)
 	}
 }
+
+func TestV6StatusOnlyChangeWithinUnknownNotListed(t *testing.T) {
+	base := v6Publish(t, v6Contract(), v6IDs, v6Script{"b": {"r": v6Uneval()}})
+	cand := v6Publish(t, v6Contract(), v6IDs, v6Script{"b": {"r": v6Scored(2)}})
+	cmp := v6Compare(t, base, cand)
+	v6Expect(t, cmp, RecommendInvestigate)
+	if cmp.Counts != (TransitionCounts{TransitionUnchanged: 4}) {
+		t.Fatalf("counts %+v", cmp.Counts)
+	}
+}
