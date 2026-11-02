@@ -140,3 +140,24 @@ func TestCancelledBeforeRun(t *testing.T) {
 		t.Fatalf("artifact should not exist: %v", err)
 	}
 }
+
+func TestUnsupportedConfigVersionNamed(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"version":9}`: "unsupported configuration version 9",
+		`{"version":0}`: "unsupported configuration version 0",
+		`{}`:            "configuration version is required",
+	} {
+		artifact := filepath.Join(t.TempDir(), "artifact")
+		out := RunJSON(context.Background(), []byte(raw), artifact)
+		if out.State != "FAILED" || out.Quality != nil || len(out.Diagnostics) != 1 {
+			t.Fatalf("%s: outcome %+v", raw, out)
+		}
+		d := out.Diagnostics[0]
+		if d.Code != "CONFIG_INVALID" || !strings.Contains(d.Message, want) {
+			t.Fatalf("%s: diagnostic %+v, want message containing %q", raw, d, want)
+		}
+		if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+			t.Fatalf("%s: artifact should not exist: %v", raw, err)
+		}
+	}
+}

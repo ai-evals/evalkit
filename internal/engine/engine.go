@@ -210,16 +210,22 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 		return cancelled(o, err)
 	}
 	var header struct {
-		Version int `json:"version"`
+		Version *int `json:"version"`
 	}
 	if err := json.Unmarshal(raw, &header); err == nil {
-		switch header.Version {
+		if header.Version == nil {
+			return fail(o, "CONFIG_INVALID", "RUN", "Configuration validation failed: configuration version is required")
+		}
+		switch *header.Version {
+		case 1:
 		case 2:
 			return runV2(ctx, raw, artifactDir, o)
 		case 3:
 			return runV3(ctx, raw, artifactDir, o)
 		case 4:
 			return runV4(ctx, raw, artifactDir, o, extensions)
+		default:
+			return fail(o, "CONFIG_INVALID", "RUN", fmt.Sprintf("Configuration validation failed: unsupported configuration version %d; supported versions are 1, 2, 3 and 4", *header.Version))
 		}
 	}
 	c, digest, err := validate(raw)

@@ -35,4 +35,4 @@ Preconditions:
 - The example target always answers `{"answer":"yes"}`. FAIL needs a changed `expected`, not a changed target.
 - A target gets only `PATH` in its environment and a temp CWD. A target that needs other env vars errors, which shows up as INDETERMINATE.
 - Exit `3` and exit `2` are different verdicts. INDETERMINATE is a completed run, and `2` is a framework failure.
-- A config with an unsupported `version` reports `CONFIG_INVALID` with the message `only configuration version 1 is supported`, even though v2 to v4 are supported. Don't read that message as the supported-version list.
+- A config with an unsupported `version` reports `CONFIG_INVALID` with `unsupported configuration version N; supported versions are 1, 2, 3 and 4`. A config without `version` reports `configuration version is required`.
