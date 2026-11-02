@@ -2,7 +2,7 @@
 
 Outside-in implementation of the evalkit specification, one vertical slice per version.
 
-**Scope through V6:** versioned JSON configurations with one or more cases and named scorers, one direct command target, bounded concurrency and scorer retries, a Go SDK for trusted custom scorers, a deterministic quality verdict, locally committed JSON run evidence, and read-only inspection and comparison of published runs. Each version's section below states its limits. This is a development skeleton, not a release-ready or security-isolated runner.
+**Scope through V7:** versioned JSON configurations with one or more cases and named scorers, one direct command target, bounded concurrency and scorer retries, a Go SDK for trusted custom scorers, a deterministic quality verdict, locally committed JSON run evidence that keeps each case's target stdout, and read-only inspection and comparison of published runs. Each version's section below states its limits. This is a development skeleton, not a release-ready or security-isolated runner.
 
 ## Run tests
 
@@ -211,5 +211,72 @@ Limits:
   is refused as `ARTIFACT_VERIFICATION_FAILED`. Artifacts evalkit published are
   unaffected.
 - A status change inside UNKNOWN, such as ERRORED to SKIPPED, is UNCHANGED and not listed.
-- There is no `--timeout`. Each side reads three files of bounded size.
+- There is no `--timeout`. Each side reads three files of at most 16 MiB each. From V7, `run` keeps `run.json` within that limit, so every COMPLETED run can be read back.
 - As with V5, the checksums prove self-consistency, not who produced either artifact.
+
+## V7 retained output and attributed diagnostics
+
+`evalkit compare` now shows why a cell moved. Each run keeps what its target wrote to stdout for every case, and each CASE and SCORER diagnostic names the case it is about.
+
+Every case whose target ran keeps its stdout in `run.json` at `cases[i].output`, or `case.output` for a version 1 run:
+
+```json
+"output": {"form": "JSON", "size": 17, "sha256": "863528c9b14f3ea195d472c71227d5a606cecb578932bdad916d7f01511e4671", "bytes": "eyJhbnN3ZXIiOiJ5ZXMifQo="}
+```
+
+- `form` is `JSON` (exactly one JSON value), `MALFORMED` (any other output), `OVERSIZED` (more than the 1 MiB target limit) or `EMPTY` (no bytes, including a target that never started).
+- `size` and `sha256` cover every byte the target wrote, including bytes past the limit.
+- `bytes` is the base64 of the bytes the run kept. When the run kept fewer than `size` bytes, `truncated` is `true` and `bytes` is a prefix.
+- A run keeps at most 8 MiB of output, split evenly over its cases. Each case keeps up to 1 MiB or 8 MiB divided by the number of cases, whichever is smaller. That is the whole output for up to 8 cases, about 82 KiB per case at 100 cases, and about 8 KiB at 1000.
+- Failed, malformed and oversized targets keep their output too. An INVALID case keeps none, because its target never ran. A cancelled run publishes nothing, and its stdout record holds no output.
+- `retained_output` in `run.json` and in `inspect` says what the run kept: `RETAINED` (every output whole), `TRIMMED` (at least one output is a prefix) or `NONE` (no output, see the limits below).
+- `report.json` is unchanged.
+
+To read a whole output:
+
+```sh
+jq -r '.cases[] | select(.id=="case-2") | .output.bytes | @base64d' pr-run/run.json
+```
+
+Each CASE and SCORER diagnostic has a `subject`. SCORER diagnostics also name the `scorer_id`, and RUN diagnostics have none:
+
+```json
+{"code": "TARGET_EXECUTION_ERROR", "scope": "CASE", "message": "target process failed", "subject": {"case_index": 1, "case_id": "case-2"}}
+```
+
+`case_index` is the position in `cases` and in `measurement.case_ids`, so it tells apart duplicate and empty case IDs. Messages stay static. evalkit never copies target stderr or scorer error text.
+
+In `compare`, the `from` and `to` of each listed change carry `output` and `diagnostics`. `output` has the form, size, SHA-256, `truncated`, and a `preview` of the first 1 KiB as text. `complete` is `true` when `preview` is every byte the target wrote. Equal `size` and `sha256` mean the target wrote the same thing, even when both sides are truncated. `diagnostics` are the case's CASE diagnostics plus the SCORER diagnostics of that change's scorer. Both fields are omitted for a side that kept nothing.
+
+Real output for the V6 example above, where the candidate's target answers `no` on `case-2` (`jq '.changes[0]'`, exit 1):
+
+```json
+{
+  "case_id": "case-2", "scorer_id": "exact-required", "required": true, "transition": "REGRESSED",
+  "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1,
+           "output": {"form": "JSON", "size": 17, "sha256": "863528c9b14f3ea195d472c71227d5a606cecb578932bdad916d7f01511e4671",
+                      "truncated": false, "complete": true, "preview": "{\"answer\":\"yes\"}\n"}},
+  "to":   {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0,
+           "output": {"form": "JSON", "size": 16, "sha256": "424d38bfd14d06dea6829f4745fd6a0e9a8591644d4fd1c836ae1045408d062b",
+                      "truncated": false, "complete": true, "preview": "{\"answer\":\"no\"}\n"}}
+}
+```
+
+Real output when the candidate's target prints `partial`, writes a marker to stderr and exits 1 (`jq '.changes[0].to'`, exit 3). The marker is in none of the artifact files, nor in the `run` stdout:
+
+```json
+{"cell": "UNKNOWN", "case_state": "ERRORED", "status": "ERRORED", "score": null,
+ "output": {"form": "MALFORMED", "size": 7, "sha256": "9834a14ab9bcaa0f6a8da71073617eac8f004e596a3fa11d807b84631b825d9d",
+            "truncated": false, "complete": true, "preview": "partial"},
+ "diagnostics": [{"code": "TARGET_EXECUTION_ERROR", "scope": "CASE", "message": "target process failed"}]}
+```
+
+In Go, `sdk.Endpoint` gains `Output` and `Diagnostics`, `Change.OutputChanged()` reports whether the two runs' outputs differ (and whether both sides kept one), and `Inspection.RetainedOutput()` returns `retained_output`.
+
+Limits:
+
+- Artifacts from v0.6.0 and earlier verify, inspect and compare exactly as before. They have no `output`, `subject` or `retained_output`, so neither command shows them.
+- evalkit v0.6.0 and earlier refuse V7 artifacts with `ARTIFACT_VERIFICATION_FAILED`, as v0.4 refused the `measurement` that v0.5 added.
+- evalkit never reads target stderr, but it keeps stdout. Treat every artifact directory, and the `run` stdout in your CI logs, as holding your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text.
+- If `run.json` would exceed the 16 MiB read limit, evalkit cuts every output to one common prefix length that fits, down to no bytes, which keeps form, size and SHA-256. If that does not fit either, the run keeps no output and records `retained_output: NONE`. If the run record does not fit even without outputs, the run fails with `ARTIFACT_COMMIT_FAILED` instead of publishing an artifact that `inspect` would refuse.
+- A cell is listed only when its state or score changes. A change of output alone lists nothing.
