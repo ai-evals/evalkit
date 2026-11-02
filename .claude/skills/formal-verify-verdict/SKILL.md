@@ -88,15 +88,8 @@ Each check below was run against a scratch break of real code, caught the break,
 
 ## Coverage record and sync
 
-Last confirmed at commit `8fcb0258370f04d542f1831dbd5d3c833805d67c` (v0.5.0).
+Last confirmed at commit `51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f` (V7 squash commit, #13).
 
-<!-- V7 updates everything in this file except the SHA above and in the diff
-command below. A squash merge gives the PR's commits SHAs that never reach
-main, so after the merge, check out the V7 squash commit on main, read
-`git diff 8fcb025..<sha>` over the covered files (it also covers V6 #12 and
-#11, which this record never confirmed), run `run.sh`, and land
-`chore(verify): confirm formal-verify-verdict at <sha>` that replaces both
-SHAs with the V7 squash SHA and "(v0.7.0)" and deletes this comment. -->
 
 Covered code:
 
@@ -113,7 +106,7 @@ Covered code:
 To see whether covered code changed since the sync commit:
 
 ```sh
-git diff --stat 8fcb0258370f04d542f1831dbd5d3c833805d67c -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go internal/engine/retained.go internal/engine/readmodel.go
+git diff --stat 51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go internal/engine/retained.go internal/engine/readmodel.go
 ```
 
 If that diff is non-empty, read it against the properties above, update the oracle or the domains if the contract changed, and run `run.sh`. Move the sync commit forward only after you have confirmed that the harness still describes the code at the new commit. "The run passes" is not enough on its own: for example, a new scorer status that the domain never produces would also pass.
