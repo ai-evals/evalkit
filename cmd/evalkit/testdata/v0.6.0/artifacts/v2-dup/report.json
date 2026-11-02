@@ -1,0 +1,50 @@
+{
+  "run_id": "af3abd84a2f899b6440f1f7a2946a20a",
+  "quality": "INDETERMINATE",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "case-1",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "ERRORED",
+      "target_status": "ERRORED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "ERRORED"
+        }
+      ]
+    }
+  ]
+}

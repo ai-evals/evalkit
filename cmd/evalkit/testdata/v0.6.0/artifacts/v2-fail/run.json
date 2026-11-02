@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "run_id": "aa1ac57be2f985fe9e1ff40303787fd5",
+  "state": "COMPLETED",
+  "quality": "FAIL",
+  "config_digest": "e2f9f423f655447ab20378412f2c384c128a37a0864625b80999c49ee0321d1d",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        },
+        {
+          "id": "exact-observational",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 0,
+          "attempts": 1
+        },
+        {
+          "id": "exact-observational",
+          "status": "SUCCEEDED",
+          "score": 0,
+          "attempts": 1
+        }
+      ]
+    }
+  ],
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-1",
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact-required",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      },
+      {
+        "id": "exact-observational",
+        "kind": "exact_match",
+        "threshold": 0.5,
+        "required": false
+      }
+    ]
+  },
+  "artifact_dir": "artifacts/v2-fail"
+}

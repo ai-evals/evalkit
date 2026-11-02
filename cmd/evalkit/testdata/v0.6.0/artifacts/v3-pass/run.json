@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_id": "cf0f75e3f1c7cbe2a32b57a101fbfc33",
+  "state": "COMPLETED",
+  "quality": "PASS",
+  "config_digest": "562377f856cbada25193337ec159251dac102e0af3b4ae171ab06f69ea05025e",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-3",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    }
+  ],
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-1",
+      "case-2",
+      "case-3"
+    ],
+    "scorers": [
+      {
+        "id": "exact-required",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      }
+    ]
+  },
+  "artifact_dir": "artifacts/v3-pass"
+}

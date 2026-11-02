@@ -1,0 +1,43 @@
+{
+  "run_id": "cfbe78bf0a0613d287359f1802c8ffec",
+  "quality": "INDETERMINATE",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "ERRORED",
+      "target_status": "ERRORED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "ERRORED"
+        }
+      ]
+    },
+    {
+      "id": "case-3",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    }
+  ]
+}

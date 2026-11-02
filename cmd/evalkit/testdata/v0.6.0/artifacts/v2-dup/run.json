@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "run_id": "af3abd84a2f899b6440f1f7a2946a20a",
+  "state": "COMPLETED",
+  "quality": "INDETERMINATE",
+  "config_digest": "cdcbd9e3547e569ed0840bc0dd498b09b94daa444043b626bc7075c58a0e8773",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "case-1",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "",
+      "state": "INVALID",
+      "target_status": "SKIPPED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SKIPPED"
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "ERRORED",
+      "target_status": "ERRORED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "ERRORED"
+        }
+      ]
+    }
+  ],
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-1",
+      "case-1",
+      "",
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact-required",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "code": "DATASET_INVALID_CASE",
+      "scope": "CASE",
+      "message": "Invalid case identity or JSON input"
+    },
+    {
+      "code": "DATASET_INVALID_CASE",
+      "scope": "CASE",
+      "message": "Invalid case identity or JSON input"
+    },
+    {
+      "code": "DATASET_INVALID_CASE",
+      "scope": "CASE",
+      "message": "Invalid case identity or JSON input"
+    },
+    {
+      "code": "TARGET_EXECUTION_ERROR",
+      "scope": "CASE",
+      "message": "target process failed"
+    }
+  ],
+  "artifact_dir": "artifacts/v2-dup"
+}

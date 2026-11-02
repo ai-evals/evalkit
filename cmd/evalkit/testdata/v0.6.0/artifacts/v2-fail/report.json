@@ -1,0 +1,44 @@
+{
+  "run_id": "aa1ac57be2f985fe9e1ff40303787fd5",
+  "quality": "FAIL",
+  "cases": [
+    {
+      "id": "case-1",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        },
+        {
+          "id": "exact-observational",
+          "status": "SUCCEEDED",
+          "score": 1,
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "id": "case-2",
+      "state": "SCORED",
+      "target_status": "SUCCEEDED",
+      "scorers": [
+        {
+          "id": "exact-required",
+          "status": "SUCCEEDED",
+          "score": 0,
+          "attempts": 1
+        },
+        {
+          "id": "exact-observational",
+          "status": "SUCCEEDED",
+          "score": 0,
+          "attempts": 1
+        }
+      ]
+    }
+  ]
+}

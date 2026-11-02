@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "run_id": "8980f0df272f332ce30ac96ef9175a4e",
+  "state": "COMPLETED",
+  "quality": "PASS",
+  "config_digest": "8344983da454be762ca30134ed2c65a2e27b36de526b62eec8ac43f7525644e2",
+  "case": {
+    "id": "case-2",
+    "target_status": "SUCCEEDED",
+    "scorer_status": "SUCCEEDED",
+    "score": 1
+  },
+  "measurement": {
+    "schema_version": 1,
+    "case_ids": [
+      "case-2"
+    ],
+    "scorers": [
+      {
+        "id": "exact_match",
+        "kind": "exact_match",
+        "threshold": 1,
+        "required": true
+      }
+    ]
+  },
+  "artifact_dir": "artifacts/v1-pass"
+}
