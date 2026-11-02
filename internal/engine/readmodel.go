@@ -67,10 +67,14 @@ type verifiedRun struct {
 //   - every observation satisfies validObservedScore;
 //   - qualityOfCases(cases, contract.Scorers) is the run's quality.
 //
-// So cell (i, j) is cases[i].Scorers[j] under contract.Scorers[j].
+// So cell (i, j) is cases[i].Scorers[j] under contract.Scorers[j]. Its
+// retained output is cases[i].Output, and diagnostics[i] are the diagnostics
+// the run attributed to case i, in run order. Both are empty for artifacts
+// published before V7.
 type measuredRun struct {
-	contract MeasurementDefinition
-	cases    []V2CaseResult
+	contract    MeasurementDefinition
+	cases       []V2CaseResult
+	diagnostics [][]Diagnostic
 }
 
 // loadVerified is the one reader of a published artifact. A cancelled
@@ -109,7 +113,14 @@ func loadVerified(ctx context.Context, dir string, refusal ReadError) (verifiedR
 	if qualityOfCases(cases, o.Measurement.Scorers) != q.String() {
 		return verifiedRun{}, &refusal
 	}
-	run.measured = &measuredRun{contract: *o.Measurement, cases: cases}
+	// VerifyArtifact checked every subject's index against these cases.
+	byCase := make([][]Diagnostic, len(cases))
+	for _, d := range o.Diagnostics {
+		if d.Subject != nil {
+			byCase[d.Subject.CaseIndex] = append(byCase[d.Subject.CaseIndex], d)
+		}
+	}
+	run.measured = &measuredRun{contract: *o.Measurement, cases: cases, diagnostics: byCase}
 	return run, nil
 }
 

@@ -22,10 +22,12 @@ import (
 const v7StderrSecret = "evalkit-v7-stderr-secret"
 
 // v7Printed is exactly what TestV7TargetHelper writes to stdout for each
-// case ID up to an optional "#suffix", and v7Exit its exit status. Any other
-// ID prints {"answer":"yes"}.
+// behavior, and v7Exit its exit status. A case's behavior is its ID up to an
+// optional "#suffix", unless the target has an "as=<id>:<behavior>" argument.
+// Any other behavior prints {"answer":"yes"}.
 var v7Printed = map[string][]byte{
 	"json":        []byte("{\"answer\":\"yes\"}\n"),
+	"spaced":      []byte("{\"answer\": \"yes\"}\n"),
 	"no":          []byte("{\"answer\":\"no\"}\n"),
 	"malformed":   []byte("answer: maybe\n"),
 	"two-values":  []byte(`{"a":1} {"b":2}`),
@@ -55,6 +57,11 @@ func TestV7TargetHelper(t *testing.T) {
 		os.Stderr.WriteString(v7StderrSecret + "\n")
 	}
 	behavior, _, _ := strings.Cut(req.CaseID, "#")
+	for _, a := range os.Args {
+		if id, b, ok := strings.Cut(strings.TrimPrefix(a, "as="), ":"); ok && id == req.CaseID {
+			behavior = b
+		}
+	}
 	out, ok := v7Printed[behavior]
 	if !ok {
 		out = v7Printed["json"]
@@ -66,13 +73,17 @@ func TestV7TargetHelper(t *testing.T) {
 	os.Exit(v7Exit[behavior])
 }
 
-func v7Target(t *testing.T) map[string]any {
+func v7Target(t *testing.T, overrides ...string) map[string]any {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]any{"command": exe, "args": []string{"-test.run=^TestV7TargetHelper$", "--", "mode=v7"}}
+	args := []string{"-test.run=^TestV7TargetHelper$", "--", "mode=v7"}
+	for _, o := range overrides {
+		args = append(args, "as="+o)
+	}
+	return map[string]any{"command": exe, "args": args}
 }
 
 func v7Cases(ids ...string) []map[string]any {
