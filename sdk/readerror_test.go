@@ -40,3 +40,23 @@ func TestV6SDKInspectRefusalIsPublic(t *testing.T) {
 		t.Fatalf("cancelled inspect err=%v", err)
 	}
 }
+
+func TestV6SDKCompareRefusalsArePublic(t *testing.T) {
+	artifact, tampered := sdkTampered(t)
+	_, err := NewComparer().Compare(context.Background(), ComparisonRequest{BaselineDir: artifact, CandidateDir: tampered})
+	var refused *ReadError
+	if !errors.As(err, &refused) || *refused != (ReadError{Code: CodeArtifactVerificationFailed, Scope: ScopeComparison, Input: InputCandidate}) ||
+		err.Error() != "evalkit comparison: ARTIFACT_VERIFICATION_FAILED candidate" {
+		t.Fatalf("compare err=%v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewComparer().Compare(ctx, ComparisonRequest{BaselineDir: artifact, CandidateDir: artifact}); !errors.Is(err, context.Canceled) || errors.As(err, &refused) {
+		t.Fatalf("cancelled compare err=%v", err)
+	}
+	cmp, err := NewComparer().Compare(context.Background(), ComparisonRequest{BaselineDir: artifact, CandidateDir: artifact})
+	if err != nil || cmp.Recommendation() != Ship || cmp.Count(Unchanged) != 2 || cmp.Count("NOT_A_TRANSITION") != 0 || len(cmp.Changes()) != 0 ||
+		cmp.Baseline() != cmp.Candidate() || cmp.Candidate().Quality != "PASS" {
+		t.Fatalf("self compare: %s %v", cmp.JSON(), err)
+	}
+}

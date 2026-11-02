@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strconv"
@@ -129,6 +130,22 @@ func (c TransitionCounts) MarshalJSON() ([]byte, error) {
 		b = strconv.AppendInt(b, int64(c[t]), 10)
 	}
 	return append(b, '}'), nil
+}
+
+// CompareArtifacts reads two published artifacts and compares them cell by
+// cell. It executes nothing and writes nothing. It returns the bare context
+// error or a *ReadError and nothing else. Verification of both inputs
+// outranks comparability.
+func CompareArtifacts(ctx context.Context, baselineDir, candidateDir string) (Comparison, error) {
+	baseline, err := loadVerified(ctx, baselineDir, ReadError{Scope: ScopeComparison, Input: InputBaseline})
+	if err != nil {
+		return Comparison{}, err
+	}
+	candidate, err := loadVerified(ctx, candidateDir, ReadError{Scope: ScopeComparison, Input: InputCandidate})
+	if err != nil {
+		return Comparison{}, err
+	}
+	return compareRuns(baseline, candidate)
 }
 
 // compareRuns is the whole comparison policy, a pure function over two
