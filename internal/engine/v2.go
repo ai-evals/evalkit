@@ -148,7 +148,7 @@ func runV2(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outco
 // are returned to the coordinator and committed in dataset ordinal order.
 // index is c's dataset ordinal, which attributes diagnostics because case IDs
 // are not unique.
-func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurrences int, maxAttempts int, custom map[string]RegisteredScorer) (V2CaseResult, []Diagnostic) {
+func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurrences int, maxAttempts int, assessors []assessor) (V2CaseResult, []Diagnostic) {
 	result := V2CaseResult{ID: c.ID, State: "PENDING"}
 	for _, sc := range cfg.Scorers {
 		result.Scorers = append(result.Scorers, ScorerObservation{ID: sc.ID, Status: "SKIPPED"})
@@ -182,25 +182,12 @@ func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurr
 	}
 	result.State = "SCORED"
 	result.TargetStatus = "SUCCEEDED"
-	actual, _ := decodeJSONValue(output.head)
-	expected, _ := decodeJSONValue(c.Expected)
 	var diagnostics []Diagnostic
 	requiredError := false
 	for i, sc := range cfg.Scorers {
-		var candidate AssessmentCandidate
-		var attempts int
-		var scoreErr error
-		if sc.Kind == "exact_match" {
-			var score float64
-			score, attempts, scoreErr = retryScorer(ctx, maxAttempts, func(context.Context) (float64, error) { return exactMatchScore(actual, expected), nil })
-			if scoreErr == nil {
-				candidate = AssessmentCandidate{Kind: "SCORED", Score: &score}
-			}
-		} else {
-			ext := custom[sc.ID]
-			input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Actual: append(json.RawMessage(nil), output.head...), Expected: append(json.RawMessage(nil), c.Expected...)}
-			candidate, attempts, scoreErr = retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return ext.Evaluate(ctx, input.Clone()) })
-		}
+		input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Input: c.Input, Actual: output.head, Expected: c.Expected}
+		assess := assessors[i]
+		candidate, attempts, scoreErr := retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return assess(ctx, input.Clone()) })
 		observation := ScorerObservation{ID: sc.ID, Attempts: attempts}
 		if scoreErr != nil || !validCandidate(candidate) {
 			observation.Status = "ERRORED"
@@ -270,6 +257,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 	for _, c := range cfg.Cases {
 		occurrences[c.ID]++
 	}
+	assessors := assessorsFor(cfg.Scorers, custom)
 	results := make([]V2CaseResult, len(cfg.Cases))
 	diagnostics := make([][]Diagnostic, len(cfg.Cases))
 	jobs := make(chan int)
@@ -282,7 +270,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 				if ctx.Err() != nil {
 					continue
 				}
-				results[i], diagnostics[i] = evaluateCase(ctx, cfg, i, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, custom)
+				results[i], diagnostics[i] = evaluateCase(ctx, cfg, i, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, assessors)
 			}
 		}()
 	}
@@ -320,4 +308,30 @@ dispatch:
 		return fail(o, "ARTIFACT_COMMIT_FAILED", "RUN", "Required artifact publication failed")
 	}
 	return sealed
+}
+
+// assessor scores one case. Every scorer kind is one, so evaluateCase applies
+// the attempt budget and the validCandidate rule without knowing the kind.
+type assessor func(context.Context, ScorerInput) (AssessmentCandidate, error)
+
+// assessorsFor resolves cfg's scorers once per run, parallel to scorers.
+// Validation has already checked that every custom scorer is registered.
+func assessorsFor(scorers []V2Scorer, custom map[string]RegisteredScorer) []assessor {
+	out := make([]assessor, len(scorers))
+	for i, sc := range scorers {
+		switch sc.Kind {
+		case "exact_match":
+			out[i] = assessExactMatch
+		case "custom":
+			out[i] = custom[sc.ID].Evaluate
+		}
+	}
+	return out
+}
+
+func assessExactMatch(_ context.Context, in ScorerInput) (AssessmentCandidate, error) {
+	actual, _ := decodeJSONValue(in.Actual)
+	expected, _ := decodeJSONValue(in.Expected)
+	score := exactMatchScore(actual, expected)
+	return AssessmentCandidate{Kind: "SCORED", Score: &score}, nil
 }

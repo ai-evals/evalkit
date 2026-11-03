@@ -93,13 +93,13 @@ Last confirmed at commit `51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f` (V7 squash c
 
 Covered code:
 
-- `internal/engine/v2.go`: `validateScorerContract` (the required/threshold rules that the oracle assumes, shared by config validation and inspection), `validateV2WithCustom`, `evaluateCase`, `qualityOfCases`, `runCases`
+- `internal/engine/v2.go`: `validateScorerContract` (the required/threshold rules that the oracle assumes, shared by config validation and inspection), `validateV2WithCustom`, `evaluateCase`, `assessorsFor`, `assessExactMatch`, `qualityOfCases`, `runCases`
 - `internal/engine/v4.go`: `runV4`
 - `internal/engine/v3.go`: `runV3`. It shares `runCases`, but P1 and P2 drive V4 configs only.
-- `internal/engine/retry.go`: `retryOperation`, `retryScorer`, `retryAssessment`
+- `internal/engine/retry.go`: `retryOperation`, `retryAssessment`
 - `internal/engine/extensions.go`: `validCandidate`
 - `internal/engine/inspection.go`: `measurementForCases`, `verifyMeasurementAccounting`, `validObservedScore`
-- `internal/engine/engine.go`: `execute` (stdout capture on every path but cancellation), `exactMatchScore`, `publish`, `VerifyArtifact`
+- `internal/engine/engine.go`: `runIsolated`, `execute` (stdout capture on every path but cancellation), `exactMatchScore`, `publish`, `VerifyArtifact`
 - `internal/engine/retained.go`: `retentionAllowance`, `retainOutput`, `classifyOutput`, `stdoutDigest`, `caseDiagnostic`, `scorerDiagnostic`, `retentionOf`, `mapOutputs`, `withoutOutputs`, `encodeRunEvidence` (its untrimmed rung only), `verifyRetainedEvidence`, `possibleOutput`, `attributedTo`, and the `UnmarshalText` of `OutputForm` and `OutputRetention`
 - `internal/engine/readmodel.go`: `observedCases`, which `verifyRetainedEvidence` and `encodeRunEvidence` lift v1 through
 

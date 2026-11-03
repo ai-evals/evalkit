@@ -76,7 +76,7 @@ func TestV3AC01ConcurrentCasesStableOrdering(t *testing.T) {
 }
 func TestV3AC02BoundedRetrySuccess(t *testing.T) {
 	calls := 0
-	score, n, err := retryScorer(context.Background(), 3, func(context.Context) (float64, error) {
+	score, n, err := retryOperation(context.Background(), 3, func(context.Context) (float64, error) {
 		calls++
 		if calls < 3 {
 			return 0, &RetryableScorerError{Err: errors.New("temporary")}
@@ -89,14 +89,14 @@ func TestV3AC02BoundedRetrySuccess(t *testing.T) {
 }
 func TestV3AC03NoRetryForPermanentError(t *testing.T) {
 	calls := 0
-	_, n, err := retryScorer(context.Background(), 5, func(context.Context) (float64, error) { calls++; return 0, errors.New("permanent") })
+	_, n, err := retryOperation(context.Background(), 5, func(context.Context) (float64, error) { calls++; return 0, errors.New("permanent") })
 	if err == nil || calls != 1 || n != 1 {
 		t.Fatalf("attempts=%d calls=%d err=%v", n, calls, err)
 	}
 }
 func TestV3AC04RetryBudgetExhausted(t *testing.T) {
 	calls := 0
-	_, n, err := retryScorer(context.Background(), 2, func(context.Context) (float64, error) {
+	_, n, err := retryOperation(context.Background(), 2, func(context.Context) (float64, error) {
 		calls++
 		return 0, &RetryableScorerError{Err: errors.New("temporary")}
 	})

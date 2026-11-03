@@ -34,9 +34,6 @@ func retryOperation[T any](ctx context.Context, limit int, evaluate func(context
 	}
 	return zero, limit, errors.New("attempt budget exhausted")
 }
-func retryScorer(ctx context.Context, limit int, evaluate func(context.Context) (float64, error)) (float64, int, error) {
-	return retryOperation(ctx, limit, evaluate)
-}
 func retryAssessment(ctx context.Context, limit int, evaluate func(context.Context) (AssessmentCandidate, error)) (AssessmentCandidate, int, error) {
 	return retryOperation(ctx, limit, evaluate)
 }
