@@ -1,282 +1,648 @@
-# evalkit — evalkit walking skeleton
+# evalkit
 
-Outside-in implementation of the evalkit specification, one vertical slice per version.
+evalkit evaluates a command-line target against a JSON dataset. For each case it starts your target once, sends the case input on stdin, scores the JSON answer the target prints, and publishes the run as a directory of checksummed JSON evidence. `evalkit inspect` reads a published run back, and `evalkit compare` compares two runs cell by cell, so you can judge a pull request against the run from `main`.
 
-**Scope through V7:** versioned JSON configurations with one or more cases and named scorers, one direct command target, bounded concurrency and scorer retries, a Go SDK for trusted custom scorers, a deterministic quality verdict, locally committed JSON run evidence that keeps each case's target stdout, and read-only inspection and comparison of published runs. Each version's section below states its limits. This is a development skeleton, not a release-ready or security-isolated runner.
+Every completed run has one verdict, PASS, FAIL, or INDETERMINATE, and [Verdicts](#verdicts) lists the exit code and the `compare` recommendation for each.
 
-## Run tests
+## Install
 
-```sh
-go test ./...
-go vet ./...
-```
+evalkit runs on macOS and Linux. Releases ship for `amd64` and `arm64`.
 
-## Execute the sample
+### Install with Homebrew
 
-```sh
-mkdir -p .local
-go build -o "$(pwd)/.local/evalkit-example-target" ./examples/target
-go build -o "$(pwd)/.local/evalkit" ./cmd/evalkit
-# Set target.command in examples/evalkit.json to the absolute path printed below:
-pwd
-.local/evalkit run --config examples/evalkit.json --artifact-dir .local/first-run
-```
-
-The sample file includes a placeholder executable path, which **must** be replaced before running. Use a new artifact directory for each invocation.
-
-The CLI prints one JSON Run outcome to stdout and returns 0 (PASS), 1 (FAIL), 3 (INDETERMINATE), or 2 (framework error/cancellation).
-
-## V1 behavior
-
-- Configuration version 1 is strict JSON with exactly one case and one exact-match scorer. Later versions have their own sections below.
-- Command executed **without a shell**, with a controlled temporary working directory, a reduced environment (PATH only), JSON request on stdin, and one JSON result on stdout.
-- Command output bounded to 1 MiB; no raw target stderr leaked into public diagnostics.
-- Exact-match compares JSON values structurally. Correct result scores 1, mismatch scores 0. A malformed target result makes coverage incomplete and the completed quality INDETERMINATE.
-- Required run/report evidence is staged, hashed, synced and published via a directory rename with `commit.json` written last in staging. Basic reader verifies integrity and report consistency.
-- Output is never intentionally overwritten by a normal repeated run.
-
-## Deliberately out of scope
-
-A durable retry scheduler, enforceable process-tree isolation, network/filesystem sandboxing, external providers, arbitrary extension loading, and sophisticated transaction recovery remain later slices. This local executor **must not be used** where those security controls are required.
-
-Known hardening work before production readiness: atomic exclusive artifact-path reservation under adversarial races, crash/fault injection around rename and directory fsync, cleanup uncertainty accounting, and stronger termination of process descendants. The v1 tests verify the nominal and deterministic failure paths, not these stronger environmental guarantees.
-
-## Releases and Homebrew (macOS and Linux)
-
-Releases are automatic. Every push to `main` that passes CI on Linux and macOS is
-checked for [Conventional Commits](https://www.conventionalcommits.org/) since the last
-`vX.Y.Z` tag, and the version is derived from them (there is no `VERSION` file):
-
-| Commit type | Release |
-| --- | --- |
-| `fix:`, `perf:`, `revert:` | patch (`0.5.0` → `0.5.1`) |
-| `feat:` | minor (`0.5.1` → `0.6.0`) |
-| `!` after the type, or a `BREAKING CHANGE:` footer | minor while evalkit is `0.x`; from `1.x` it requires a `/vN` module path first |
-| `chore:`, `docs:`, `ci:`, `test:`, `refactor:`, `build:`, `style:` | none |
-
-Pull requests are squash-merged, so the **PR title** is the commit that lands and must be a
-Conventional Commit header (`type(scope): description`); CI checks it and writes what merging
-would publish to the job summary. Use `ci:`/`build:`/`chore:` for changes to the release
-tooling itself, so they do not cut an evalkit release.
-
-A release appears with its tag, cross-compiled Linux/macOS amd64/arm64 archives and
-`SHA256SUMS` all at once (the tag is created when the complete draft release is published).
-Then `Formula/evalkit.rb` and `CHANGELOG.md` are updated on `main` in one
-`chore(release): vX.Y.Z` commit. Nothing is committed when they are already current.
-If a release job fails midway, re-run it (or run the `CI` workflow on `main`); it finishes
-the work without duplicating anything.
-
-To see what the current checkout would publish (read-only, needs only git):
-
-```sh
-go run ./internal/cmd/release plan
-go run ./internal/cmd/release plan --build /tmp/evalkit-dist   # also cross-build the archives
-```
-
-The repository also acts as its own Homebrew tap (a separate tap repository is not required):
+The repository is its own Homebrew tap:
 
 ```sh
 brew tap ai-evals/evalkit https://github.com/ai-evals/evalkit.git
 brew install ai-evals/evalkit/evalkit
-# or: brew upgrade ai-evals/evalkit/evalkit
 evalkit version
 ```
 
-## V2 multi-case configuration
-
-See `examples/evalkit-v2.json` for a complete multi-case sample.
-
-Configuration version 2 accepts `cases` and named `scorers` arrays; `required: true`
-scorers determine required coverage. Each case has `id`, `input`, and `expected` JSON.
-Invalid cases are accounted for explicitly and yield INDETERMINATE when required
-coverage cannot be completed. Version 1 remains compatible.
-
-The V2 implementation is still serial; concurrency and attempt retry budgets are V3.
-
-## V3 bounded execution
-
-See `examples/evalkit-v3.json` for a complete V3 example.
-
-Configuration version 3 adds `execution: {"concurrency": 3, "scorer_max_attempts": 2}`.
-Case execution uses a bounded worker pool while preserving original dataset order in
-artifacts. Scorer retry eligibility is strict and cannot retry target commands.
-Run deadlines stop new case admission and request process-group termination.
-A local process group is **not** a hostile-code sandbox and cannot prevent
-processes from escaping the group or enforcing network/filesystem isolation.
-
-## V4 public Go SDK
-
-The Go package `github.com/ai-evals/evalkit/sdk` provides a small `Runner` API.
-Register trusted in-process `Scorer` implementations with an exact ID and
-implementation identity, then invoke `Runner.Run(ctx, sdk.Request{...})` with
-version 4 JSON configuration. `sdk.Scored(float64)` and
-`sdk.Unevaluable(reason)` are distinct results; operational errors are returned
-through Go `error`. Invalid scores are rejected by the authoritative core.
-
-Scorers are serialized by instance by default. Custom Go code is trusted
-in-process code and **not** sandboxed or forcibly interruptible.
-See `sdk/runner_test.go` for executable examples.
-
-## V5 read-only historical inspection
-
-```sh
-evalkit inspect --artifact-dir /path/to/previous/run
+```text
+evalkit 0.7.0
 ```
 
-The CLI returns typed JSON describing the recorded run, artifact self-consistency,
-and whether retained measurement-accounting evidence could be checked. In the SDK,
-use `sdk.NewInspector().Inspect(ctx, artifactDir)` without Run execution authority.
+To update, run `brew upgrade ai-evals/evalkit/evalkit`. Homebrew loads a formula from a non-official tap only after you trust it. If `brew install` says that trust is required, run `brew trust --formula ai-evals/evalkit/evalkit` and install again.
 
-SHA256 checksums verify local **self-consistency**, not authenticated authorship.
-Older v0.1-v0.4 artifacts may lack a self-contained measurement contract; their
-measurement-accounting status is therefore `NOT_RETAINED`, not fabricated as verified.
-The basic local reader rejects symlinked evidence and bounded file overflows,
-but it is not a hardened hostile-concurrent-filesystem sandbox.
+### Install from a release archive
 
-## V6 read-only comparison
+Each [release](https://github.com/ai-evals/evalkit/releases) has four archives named `evalkit_vVERSION_OS_ARCH.tar.gz`, for `darwin` and `linux` on `amd64` and `arm64`, and a `SHA256SUMS` file. Each archive holds one file, the `evalkit` binary. A release's tag appears only together with all of its archives and `SHA256SUMS`. For example, on an Apple silicon Mac:
 
 ```sh
-evalkit compare --baseline /path/to/main-run --candidate /path/to/pr-run
+curl -fsSLO https://github.com/ai-evals/evalkit/releases/download/v0.7.0/evalkit_v0.7.0_darwin_arm64.tar.gz
+curl -fsSLO https://github.com/ai-evals/evalkit/releases/download/v0.7.0/SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
+tar -xzf evalkit_v0.7.0_darwin_arm64.tar.gz
+./evalkit version
 ```
 
-`compare` reads two published artifacts and compares them cell by cell, one cell per
-case and scorer. It prints one JSON document and exits like `run`: 0 SHIP (the
-candidate is PASS), 1 ITERATE (FAIL), 3 INVESTIGATE (INDETERMINATE), and 2 when it
-refuses. It executes nothing and writes nothing.
+```text
+evalkit_v0.7.0_darwin_arm64.tar.gz: OK
+evalkit 0.7.0
+```
 
-Each cell is PASSING (scorer SUCCEEDED and score at or above the threshold), FAILING
-(SUCCEEDED and below it) or UNKNOWN (any other scorer status, or a case that is not
-SCORED). From baseline to candidate a cell is IMPROVED (FAILING to PASSING), REGRESSED
-(PASSING to FAILING), LOST_EVIDENCE (to UNKNOWN), GAINED_EVIDENCE (from UNKNOWN) or
-UNCHANGED. `counts` covers every cell and always has all five keys. `changes` lists
-only the cells whose state or score changed, in dataset order, so a score-only change
-such as 0.6 to 0.9 is listed as UNCHANGED. `case_state` explains an UNKNOWN cell whose
-own scorer SUCCEEDED: a required scorer failed on the same case.
+Move `evalkit` to a directory on your `PATH`.
 
-The recommendation follows the candidate's quality alone. A required regression makes
-the candidate FAIL or INDETERMINATE, so it never ships. Optional regressions are
-listed but never block.
+## Quickstart
 
-Real output from `examples/evalkit-v2.json`, where the candidate's target answers
-`no` on `case-2` (formatted with `jq`, exit 1):
+In this tutorial we build evalkit and an example target from source, publish a passing run, then change one of the target's answers and use `evalkit compare` to find the regression and its cause. You need git, jq, and Go 1.26 or later. With the default `GOTOOLCHAIN=auto`, a Go older than 1.27.3 downloads the go1.27.3 toolchain that `go.mod` names. Every file we create goes under `tour/` in the clone.
+
+### 1. Build evalkit and the example target
+
+Clone the repository and build both binaries:
+
+```sh
+git clone https://github.com/ai-evals/evalkit.git
+cd evalkit
+mkdir -p tour/runs
+go build -o tour/evalkit ./cmd/evalkit
+go build -o tour/example-target ./examples/target
+tour/evalkit version
+```
+
+```text
+evalkit dev
+```
+
+A binary built from source reports `dev`. The example target reads one JSON request from stdin and prints `{"answer":"yes"}`.
+
+### 2. Write a config
+
+A config names the cases, the target, and the scorers. `examples/evalkit-v3.json` has two cases, one required `exact_match` scorer, and an execution policy:
+
+```json
+{
+  "version": 3,
+  "cases": [
+    {"id": "case-1", "input": {"question": "ready?"}, "expected": {"answer": "yes"}},
+    {"id": "case-2", "input": {"question": "still ready?"}, "expected": {"answer": "yes"}}
+  ],
+  "target": {"command": "/ABSOLUTE/PATH/TO/evalkit-example-target", "args": []},
+  "scorers": [{"id": "exact", "kind": "exact_match", "threshold": 1, "required": true}],
+  "execution": {"concurrency": 2, "scorer_max_attempts": 2}
+}
+```
+
+The target path must be absolute. Write a copy that points at the example target:
+
+```sh
+sed "s#/ABSOLUTE/PATH/TO/evalkit-example-target#$PWD/tour/example-target#" examples/evalkit-v3.json > tour/baseline.json
+```
+
+### 3. Run the baseline
+
+Run the evaluation and keep its stdout:
+
+```sh
+tour/evalkit run --config tour/baseline.json --artifact-dir tour/runs/baseline > tour/baseline.out
+echo "exit $?"
+```
+
+```text
+exit 0
+```
+
+Exit 0 means PASS. The file holds the run record. Look at the verdict and the first case:
+
+```sh
+jq '{state, quality, retained_output, first_case: .cases[0]}' tour/baseline.out
+```
+
+```json
+{
+  "state": "COMPLETED",
+  "quality": "PASS",
+  "retained_output": "RETAINED",
+  "first_case": {
+    "id": "case-1",
+    "state": "SCORED",
+    "target_status": "SUCCEEDED",
+    "scorers": [
+      {
+        "id": "exact",
+        "status": "SUCCEEDED",
+        "score": 1,
+        "attempts": 1
+      }
+    ],
+    "output": {
+      "form": "JSON",
+      "size": 17,
+      "sha256": "863528c9b14f3ea195d472c71227d5a606cecb578932bdad916d7f01511e4671",
+      "bytes": "eyJhbnN3ZXIiOiJ5ZXMifQo="
+    }
+  }
+}
+```
+
+The case's scorer succeeded with a score of 1, and `output` keeps the 17 bytes the target printed, in base64. evalkit also published the run as the directory `tour/runs/baseline`, which holds `commit.json`, `report.json`, and `run.json`.
+
+### 4. Inspect the published run
+
+`evalkit inspect` reads the directory back and checks its checksums and its verdict. It runs nothing:
+
+```sh
+tour/evalkit inspect --artifact-dir tour/runs/baseline | jq .
+```
 
 ```json
 {
   "schema_version": 1,
+  "run_id": "4e677c6153458c12f1542d0d6edf11fd",
+  "state": "COMPLETED",
+  "quality": "PASS",
+  "config_digest": "d900529a3672a120a2db1bbe86663a53923b465013134692a3761c6e86623e46",
+  "integrity": "SELF_CONSISTENT",
+  "measurement_accounting": "REPORTED_DEFINITION_CONSISTENT",
+  "retained_output": "RETAINED",
+  "authenticated_author": false
+}
+```
+
+Your `run_id` and `config_digest` are different.
+
+### 5. Change one answer and run again
+
+Now we stand in for a change to your target. This script answers `no` to `case-2` and `yes` to every other case:
+
+```sh
+cat > tour/candidate-target.sh <<'EOF'
+#!/bin/sh
+read -r request
+case "$request" in
+	*'"case_id":"case-2"'*) echo '{"answer":"no"}' ;;
+	*) echo '{"answer":"yes"}' ;;
+esac
+EOF
+chmod +x tour/candidate-target.sh
+sed "s#/ABSOLUTE/PATH/TO/evalkit-example-target#$PWD/tour/candidate-target.sh#" examples/evalkit-v3.json > tour/candidate.json
+tour/evalkit run --config tour/candidate.json --artifact-dir tour/runs/candidate > tour/candidate.out
+echo "exit $?"
+```
+
+```text
+exit 1
+```
+
+Exit 1 means FAIL.
+
+### 6. Compare the two runs
+
+Compare the candidate with the baseline:
+
+```sh
+tour/evalkit compare --baseline tour/runs/baseline --candidate tour/runs/candidate > tour/compare.json
+echo "exit $?"
+jq '{recommendation, counts, changes: [.changes[] | {case_id, scorer_id, transition}]}' tour/compare.json
+```
+
+```text
+exit 1
+```
+
+```json
+{
   "recommendation": "ITERATE",
-  "baseline": {"run_id": "25b16eee8b31a989d34f4d5344b1c8d1", "quality": "PASS"},
-  "candidate": {"run_id": "9c5b59cbcc967c4c7de701f57d4fe6cb", "quality": "FAIL"},
-  "counts": {"UNCHANGED": 2, "IMPROVED": 0, "REGRESSED": 2, "LOST_EVIDENCE": 0, "GAINED_EVIDENCE": 0},
+  "counts": {
+    "UNCHANGED": 1,
+    "IMPROVED": 0,
+    "REGRESSED": 1,
+    "LOST_EVIDENCE": 0,
+    "GAINED_EVIDENCE": 0
+  },
   "changes": [
-    {"case_id": "case-2", "scorer_id": "exact-required", "required": true, "transition": "REGRESSED",
-     "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1},
-     "to": {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0}},
-    {"case_id": "case-2", "scorer_id": "exact-observational", "required": false, "transition": "REGRESSED",
-     "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1},
-     "to": {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0}}
+    {
+      "case_id": "case-2",
+      "scorer_id": "exact",
+      "transition": "REGRESSED"
+    }
   ]
 }
 ```
 
-A refusal uses the `inspect` envelope with `scope: "COMPARISON"`. `input` names the
-directory to look at, and `reason` says why two verified runs are not comparable:
+The recommendation is ITERATE. One cell, `case-2` under the `exact` scorer, went from passing to failing. The other cell did not change, so `changes` does not list it.
+
+### 7. Read why the case moved
+
+Each listed change carries what the target printed on both sides. Compare the two previews:
+
+```sh
+jq '.changes[0] | {from: .from.output.preview, to: .to.output.preview}' tour/compare.json
+```
+
+```json
+{
+  "from": "{\"answer\":\"yes\"}\n",
+  "to": "{\"answer\":\"no\"}\n"
+}
+```
+
+The expected answer stayed the same and the target's answer changed, so the target regressed. A preview holds at most the first 1 KiB. To read the whole output, decode it from the candidate's `run.json`:
+
+```sh
+jq -j '.cases[] | select(.id == "case-2") | .output.bytes | @base64d' tour/runs/candidate/run.json
+```
+
+```text
+{"answer":"no"}
+```
+
+To clean up, run `rm -rf tour`.
+
+You have published, inspected, and compared two runs, and traced a regression to the answer that caused it. To run the same loop on every pull request, see [Gate a pull request on the main baseline](#gate-a-pull-request-on-the-main-baseline).
+
+## How-to guides
+
+### Write a config and pick a version
+
+Pick the version by where your scorers run:
+
+- To score answers by exact JSON equality from the CLI, use version 3.
+- To score answers with your own Go code, use version 4 and [run it from Go](#run-an-evaluation-from-go). The CLI rejects a `custom` scorer with `CONFIG_INVALID`.
+- Versions 1 and 2 still run. [Configuration](#configuration) lists the fields that each version accepts.
+
+To write a version 3 config:
+
+1. Copy `examples/evalkit-v3.json`.
+2. Set `target.command` and `target.args` as [Target protocol](#target-protocol) describes.
+3. Add one entry to `cases` for each question. `input` is the JSON value your target receives. `expected` is the JSON value its answer must equal. Write `expected` numbers the way your target prints them.
+4. Add scorers, and mark at least one `"required": true`. Only required scorers decide the [verdict](#verdicts).
+5. Make your target read its stdin line and answer as [Target protocol](#target-protocol) describes.
+6. Run the config once. If it is invalid, `run` prints `"state":"FAILED"` with a `CONFIG_INVALID` diagnostic whose message names the problem, and exits 2.
+
+### Run an evaluation from Go
+
+To score answers with your own Go code, run a version 4 config through the package `github.com/ai-evals/evalkit/sdk`. Create a module and add evalkit:
+
+```sh
+mkdir evalkit-sdk-example && cd evalkit-sdk-example
+go mod init example.com/evalkit-sdk-example
+go get github.com/ai-evals/evalkit@v0.7.0
+```
+
+Save this program as `main.go`. It registers a scorer that compares the `answer` field without regard to case, and runs a config:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/ai-evals/evalkit/sdk"
+)
+
+type answerScorer struct{}
+
+func (answerScorer) Evaluate(_ context.Context, in sdk.ScorerInput) (sdk.Assessment, error) {
+	var got, want struct {
+		Answer string `json:"answer"`
+	}
+	if json.Unmarshal(in.ActualJSON(), &got) != nil || got.Answer == "" {
+		return sdk.Unevaluable(sdk.ReasonEvidenceMissing), nil
+	}
+	if err := json.Unmarshal(in.ExpectedJSON(), &want); err != nil {
+		return sdk.Assessment{}, err
+	}
+	if strings.EqualFold(got.Answer, want.Answer) {
+		return sdk.Scored(1), nil
+	}
+	return sdk.Scored(0), nil
+}
+
+func main() {
+	runner, err := sdk.NewRunner(sdk.Registration{ID: "answer", Implementation: "example/answer@1", Scorer: answerScorer{}})
+	if err != nil {
+		panic(err)
+	}
+	config, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	result, err := runner.Run(context.Background(), sdk.Request{ConfigJSON: config, ArtifactDir: os.Args[2]})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	quality, _ := result.Quality()
+	fmt.Println(result.RunID(), quality)
+}
+```
+
+Save this config as `evalkit.json`, and replace `/ABSOLUTE/PATH/TO/evalkit-example-target` with the absolute path of your target, such as a binary built from `examples/target`. The config names the scorer by its registered ID and implementation:
+
+```json
+{
+  "version": 4,
+  "cases": [
+    {"id": "case-1", "input": {"question": "ready?"}, "expected": {"answer": "YES"}},
+    {"id": "case-2", "input": {"question": "still ready?"}, "expected": {"answer": "yes"}}
+  ],
+  "target": {"command": "/ABSOLUTE/PATH/TO/evalkit-example-target", "args": []},
+  "scorers": [{"id": "answer", "kind": "custom", "implementation": "example/answer@1", "threshold": 1, "required": true}],
+  "execution": {"concurrency": 2, "scorer_max_attempts": 3}
+}
+```
+
+Run the program, and pass an artifact directory that does not exist yet:
+
+```sh
+go run . evalkit.json run-1
+```
+
+```text
+7a24146d7ea2140c30c116b9a5997d7f PASS
+```
+
+Your run ID is different. If you run it again into `run-1`, it prints `evalkit run FAILED: ARTIFACT_COMMIT_FAILED` and exits 2, so pass a new directory for each run. `evalkit inspect` and `evalkit compare` read the directory like a CLI artifact. [Go SDK](#go-sdk) lists the rest of the API.
+
+### Gate a pull request on the main baseline
+
+This loop gives each pull request one exit code and a list of the cells that changed against `main`. The steps are plain shell, so they fit any CI job.
+
+1. On every push to `main`, run the evaluation:
+
+    ```sh
+    evalkit run --config evalkit.json --artifact-dir main-run --timeout 15m > main-run.out
+    ```
+
+2. Store `main-run/` where pull-request jobs can fetch it, such as a CI artifact or a cache.
+3. In the pull-request job, build the pull request's target, fetch `main-run/`, and run:
+
+    ```sh
+    evalkit run --config evalkit.json --artifact-dir pr-run --timeout 15m > pr-run.out || true
+    status=0
+    evalkit compare --baseline main-run --candidate pr-run > compare.json || status=$?
+    jq . compare.json
+    exit "$status"
+    ```
+
+4. Act on the job's exit code:
+    - 0, SHIP. Merge.
+    - 1, ITERATE. A required score is below its threshold. `changes` lists the cells that got worse against `main`.
+    - 3, INVESTIGATE. Required evidence is missing. Read the `diagnostics` and `output` of the `LOST_EVIDENCE` changes.
+    - 2, refused. Read `.error` in `compare.json`, and see [Handle a refusal](#handle-a-refusal).
+
+`|| true` lets the job reach `compare` after a FAIL or INDETERMINATE run. A run with no verdict publishes nothing, so `compare` then refuses with exit 2, and `pr-run.out` holds the run's diagnostics. The default `--timeout` is 10 seconds for the whole run, so set one that fits your target.
+
+If your target's answers are sensitive, print `jq '{recommendation, counts}' compare.json` instead of the whole file, because each change's `preview` holds target output. `pr-run.out` holds the outputs too.
+
+A pull request that changes `cases` or `scorers` cannot be compared with the old baseline. Gate it on the exit code of `run`, and the next push to `main` publishes a new baseline. The target itself may differ between the two runs, because `compare` ignores `config_digest`.
+
+### Read a full retained output
+
+`compare` previews the first 1 KiB of each output. `run.json` keeps more. To print a case's whole output as text:
+
+```sh
+jq -j '.cases[] | select(.id == "case-2") | .output.bytes | @base64d' pr-run/run.json
+```
+
+For a version 1 run, use `.case.output.bytes`. jq 1.7.1 `@base64d` replaces invalid UTF-8 with U+FFFD. To get the exact bytes, decode with `base64` instead:
+
+```sh
+jq -r '.cases[] | select(.id == "case-2") | .output.bytes' pr-run/run.json | base64 -d > case-2.out
+```
+
+Before you treat the bytes as complete, check that the case's `.output.truncated` is absent. When `truncated` is `true`, `bytes` is a prefix, and `size` and `sha256` still describe everything the target wrote. A case has no `output` when its target never ran, as for an INVALID case, or when the run's `retained_output` is `NONE`.
+
+### Handle a refusal
+
+When `inspect` or `compare` cannot give an answer, it exits 2 and prints a refusal on stdout:
 
 ```json
 {"error":{"code":"COMPARISON_NOT_COMPARABLE","scope":"COMPARISON","reason":"SCORERS_DIFFER"},"schema_version":1}
 ```
 
-| Code | `input` | `reason` | Cause |
+Find the `code`, or the `reason` when there is one. [Refusals](#refusals) gives the cause of each. Then act on it:
+
+- `INVOCATION_INVALID`. Pass `--artifact-dir` to `inspect`, and both `--baseline` and `--candidate` to `compare`.
+- `ARTIFACT_VERIFICATION_FAILED`. Check the path, which `input` names for `compare`. If a newer evalkit may have written the directory, upgrade and try again. Otherwise run the evaluation again.
+- `CASES_DIFFER` or `SCORERS_DIFFER`. Publish a new baseline with the candidate's config. An upgrade of a custom scorer from `@1` to `@2` is a `SCORERS_DIFFER` too.
+- `MEASUREMENT_NOT_RETAINED`. Run the evaluation that `input` names again with the current evalkit.
+
+`run` never refuses. When it cannot reach a verdict, it prints its record with `state` set to `FAILED` or `CANCELLED` and a RUN diagnostic, and exits 2. For `ARTIFACT_COMMIT_FAILED`, pass an `--artifact-dir` that does not exist yet, inside a directory that does. For `RUN_DEADLINE_EXCEEDED`, raise `--timeout`.
+
+## Reference
+
+### Commands
+
+| Command | Prints on stdout | Exit |
+| --- | --- | --- |
+| `evalkit run --config FILE --artifact-dir DIR [--timeout DURATION]` | The run record | 0 PASS, 1 FAIL, 3 INDETERMINATE, 2 no verdict |
+| `evalkit inspect --artifact-dir DIR` | The inspection, or a refusal | 0 verified, 2 refused |
+| `evalkit compare --baseline DIR --candidate DIR` | The comparison, or a refusal | 0 SHIP, 1 ITERATE, 3 INVESTIGATE, 2 refused |
+| `evalkit version` | `evalkit VERSION` | 0 |
+
+- `run`, `inspect`, and `compare` print one line of JSON.
+- `--timeout` is the deadline for the whole run, as a Go duration such as `90s` or `15m`. The default is `10s`.
+- `DIR` for `run` must not exist, and its parent directory must exist. Otherwise the run executes every case and then fails with `ARTIFACT_COMMIT_FAILED`.
+- `run` prints `invalid run invocation` on stderr for a missing, unknown, or invalid flag, a `--timeout` that is not positive, or a positional argument. For an unreadable config it prints `cannot read configuration`. Both print nothing on stdout and exit 2.
+- An unknown command, or no command, prints the usage line on stderr and exits 2.
+- `inspect` and `compare` execute nothing, write nothing, and have no `--timeout`.
+
+### Verdicts
+
+| Quality | Meaning | Recommendation | Exit |
 | --- | --- | --- | --- |
-| `ARTIFACT_VERIFICATION_FAILED` | `baseline` or `candidate` | | The directory is missing, tampered or not verifiable. Both inputs are verified before comparability is checked. |
-| `COMPARISON_NOT_COMPARABLE` | `baseline` or `candidate` | `MEASUREMENT_NOT_RETAINED` | A v0.1-v0.4 artifact has no retained measurement. |
-| `COMPARISON_NOT_COMPARABLE` | | `CASES_DIFFER` | The case IDs differ, or are the same IDs in a different order. |
-| `COMPARISON_NOT_COMPARABLE` | | `SCORERS_DIFFER` | A scorer's ID, kind, threshold, `required` flag or custom implementation differs. |
+| `PASS` | Coverage is complete, and every required score met its threshold. | `SHIP` | 0 |
+| `FAIL` | Coverage is complete, and a required score is below its threshold. | `ITERATE` | 1 |
+| `INDETERMINATE` | Some required evidence is missing. | `INVESTIGATE` | 3 |
+| No verdict | A `FAILED` or `CANCELLED` run, a refusal, or an invocation error. | None | 2 |
 
-In Go, `sdk.NewComparer().Compare(ctx, sdk.ComparisonRequest{BaselineDir: b, CandidateDir: c})`
-returns a `Comparison` with `Recommendation`, `Baseline`, `Candidate`, `Count`, `Changes`
-and `JSON`. `JSON()` is the bytes the CLI prints, without the trailing newline. A refusal
-is a `*sdk.ReadError` with `Code`, `Scope`, `Input` and `Reason`. Cancellation returns
-`context.Canceled` or `context.DeadlineExceeded` itself. `Inspector.Inspect` now
-returns `*sdk.ReadError` too, with the same message as before.
+`run` exits with the verdict's code, and `compare` exits with the candidate's. `run` decides the verdict by these rules, and `inspect` and `compare` check stored verdicts against them:
 
-Limits:
+- A case is `INVALID` when its ID is empty or duplicated, or when its `input` or `expected` is not exactly one JSON value. Its target never runs, and its scorers are `SKIPPED`.
+- A case is `ERRORED` when its target fails. Its scorers are then all `ERRORED`.
+- A case is also `ERRORED` when a required scorer is `ERRORED` or `UNEVALUABLE`.
+- Every other case is `SCORED`.
+- The run is `PASS` when every case is `SCORED` and every required scorer `SUCCEEDED` with a score at or above its threshold.
+- The run is `FAIL` when every case is `SCORED`, every required scorer `SUCCEEDED`, and at least one required score is below its threshold.
+- Every other run is `INDETERMINATE`.
+- Optional scorers change neither the case state nor the verdict.
 
-- The comparability key is the whole retained measurement contract, so a custom scorer's
-  `implementation` is part of it. A scorer upgraded from `@1` to `@2` is a different
-  instrument, and compare refuses it with `SCORERS_DIFFER`. Publish a new baseline.
-- `config_digest` is neither part of the key nor in the output. It hashes the target,
-  which is what a comparison varies.
-- `inspect` and `compare` share one reader, which is stricter than V5's `inspect`. A
-  re-hashed artifact holding a verdict or a scorer observation evalkit cannot produce
-  is refused as `ARTIFACT_VERIFICATION_FAILED`. Artifacts evalkit published are
-  unaffected.
-- A status change inside UNKNOWN, such as ERRORED to SKIPPED, is UNCHANGED and not listed.
-- There is no `--timeout`. Each side reads three files of at most 16 MiB each. From V7, `run` keeps `run.json` within that limit, so every COMPLETED run can be read back.
-- As with V5, the checksums prove self-consistency, not who produced either artifact.
+### Configuration
 
-## V7 retained output and attributed diagnostics
+A config is one JSON value of at most 1 MiB. Unknown fields are errors. `version` is required, and versions 1, 2, 3, and 4 are supported.
 
-`evalkit compare` now shows why a cell moved. Each run keeps what its target wrote to stdout for every case, and each CASE and SCORER diagnostic names the case it is about.
+| Field | Versions | Rules |
+| --- | --- | --- |
+| `case` | 1 | `{id, input, expected}`. `id` is not empty. `input` and `expected` are each one JSON value. |
+| `scorer` | 1 | `{kind, threshold}`. `kind` is `exact_match`. `threshold` is from 0 to 1. |
+| `cases` | 2, 3, 4 | A non-empty list of `{id, input, expected}`. An invalid entry becomes an `INVALID` case, not a config error. |
+| `target` | All | `{command, args}`. `command` is not empty. `args` is an optional list of strings. |
+| `scorers` | 2, 3, 4 | A non-empty list of `{id, kind, threshold, required, implementation}`. IDs are not empty and are unique. `threshold` is from 0 to 1. At least one scorer is `required`. `kind` is `exact_match`, or `custom` in version 4 through the SDK. A `custom` scorer needs an `implementation` that matches its SDK registration. |
+| `execution` | 3, 4 | `{concurrency, scorer_max_attempts}`, both required. `concurrency` is from 1 to 16. `scorer_max_attempts` is from 1 to 10 and counts executions, not retries. Versions 1 and 2 run one case at a time. |
 
-Every case whose target ran keeps its stdout in `run.json` at `cases[i].output`, or `case.output` for a version 1 run:
+`exact_match` scores 1 when the target's answer equals `expected` and 0 otherwise. It compares JSON values by structure, and numbers by their text, so `1` and `1.0` differ. It never fails, so `scorer_max_attempts` affects only custom scorers.
 
-```json
-"output": {"form": "JSON", "size": 17, "sha256": "863528c9b14f3ea195d472c71227d5a606cecb578932bdad916d7f01511e4671", "bytes": "eyJhbnN3ZXIiOiJ5ZXMifQo="}
-```
+### Target protocol
 
-- `form` is `JSON` (exactly one JSON value), `MALFORMED` (any other output), `OVERSIZED` (more than the 1 MiB target limit) or `EMPTY` (no bytes, including a target that never started).
-- `size` and `sha256` cover every byte the target wrote, including bytes past the limit.
-- `bytes` is the base64 of the bytes the run kept. When the run kept fewer than `size` bytes, `truncated` is `true` and `bytes` is a prefix.
-- A run keeps at most 8 MiB of output, split evenly over its cases. Each case keeps up to 1 MiB or 8 MiB divided by the number of cases, whichever is smaller. That is the whole output for up to 8 cases, about 82 KiB per case at 100 cases, and about 8 KiB at 1000.
-- Failed, malformed and oversized targets keep their output too. An INVALID case keeps none, because its target never ran. A cancelled run publishes nothing, and its stdout record holds no output.
-- `retained_output` in `run.json` and in `inspect` says what the run kept: `RETAINED` (every output whole), `TRIMMED` (at least one output is a prefix) or `NONE` (no output, see the limits below).
-- `report.json` is unchanged.
+- evalkit starts `target.command` with `target.args` and no shell. `command` is an absolute path or a program name on evalkit's `PATH`. A relative path fails, because the target starts in a new temporary directory.
+- The target's environment holds only `PATH`.
+- stdin holds one line, such as `{"case_id":"case-2","input":{"question":"still ready?"}}`.
+- The target answers by printing exactly one JSON value, of at most 1 MiB, on stdout and exiting 0. Anything else is a `TARGET_EXECUTION_ERROR`.
+- evalkit discards stderr.
+- Each case runs the target once. evalkit never retries a target.
+- At the deadline, evalkit starts no new case, kills each running target's process group, and waits up to 2 seconds for it to exit.
 
-To read a whole output:
+### Artifact directory
 
-```sh
-jq -r '.cases[] | select(.id=="case-2") | .output.bytes | @base64d' pr-run/run.json
-```
+`run` publishes only `COMPLETED` runs. It writes `run.json`, `report.json`, and then `commit.json` into a staging directory next to `DIR`, syncs them, and renames the staging directory to `DIR`.
 
-Each CASE and SCORER diagnostic has a `subject`. SCORER diagnostics also name the `scorer_id`, and RUN diagnostics have none:
+| File | Contents |
+| --- | --- |
+| `run.json` | The run record, the same record `run` prints. |
+| `report.json` | `run_id`, `quality`, and `score` for version 1 or `cases` without their `output` for later versions. |
+| `commit.json` | `version`, which is 1, and `run_sha256` and `report_sha256`, the SHA-256 of the other two files. |
 
-```json
-{"code": "TARGET_EXECUTION_ERROR", "scope": "CASE", "message": "target process failed", "subject": {"case_index": 1, "case_id": "case-2"}}
-```
+Fields of the run record:
 
-`case_index` is the position in `cases` and in `measurement.case_ids`, so it tells apart duplicate and empty case IDs. Messages stay static. evalkit never copies target stderr or scorer error text.
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | 1. |
+| `run_id` | 32 hex characters. |
+| `state` | `COMPLETED`, `FAILED`, or `CANCELLED`. Only `COMPLETED` runs are published. |
+| `quality` | `PASS`, `FAIL`, `INDETERMINATE`, or `null`. |
+| `config_digest` | SHA-256 of the prefix `evalkit:vN:config:\x00`, where `N` is the config version, followed by the canonical JSON of the decoded config, target included. |
+| `case` | Version 1 only. `{id, target_status, scorer_status, score, output}`. |
+| `cases` | Versions 2 to 4. A list of `{id, state, target_status, scorers, output}` in config order. |
+| `cases[].state` | `SCORED`, `ERRORED`, or `INVALID`. |
+| `cases[].target_status` | `SUCCEEDED`, `ERRORED`, or `SKIPPED`. |
+| `cases[].scorers` | One `{id, status, score, attempts, reason}` per scorer, in config order. `status` is `SUCCEEDED`, `ERRORED`, `UNEVALUABLE`, or `SKIPPED`. `score` is present only for `SUCCEEDED`. `reason` is present only for `UNEVALUABLE`. `attempts` is omitted for `SKIPPED` scorers and for scorers `ERRORED` by a failed target. |
+| `measurement` | `{schema_version, case_ids, scorers}`, the contract `inspect` and `compare` check against. Artifacts from evalkit 0.4 and earlier have none. |
+| `retained_output` | `RETAINED` when every output is whole, `TRIMMED` when at least one output is a prefix, or `NONE` when the run kept no output. Artifacts from evalkit 0.6.0 and earlier have none. |
+| `diagnostics` | A list of `{code, scope, message, subject}`. Omitted when empty. |
+| `artifact_dir` | `DIR` as passed to `run`. |
 
-In `compare`, the `from` and `to` of each listed change carry `output` and `diagnostics`. `output` has the form, size, SHA-256, `truncated`, and a `preview` of the first 1 KiB as text. `complete` is `true` when `preview` is every byte the target wrote. Equal `size` and `sha256` mean the target wrote the same thing, even when both sides are truncated. `diagnostics` are the case's CASE diagnostics plus the SCORER diagnostics of that change's scorer. Both fields are omitted for a side that kept nothing.
+`output` is present for each case whose target ran, including a target that failed or printed malformed or oversized output:
 
-Real output for the V6 example above, where the candidate's target answers `no` on `case-2` (`jq '.changes[0]'`, exit 1):
+| Field | Meaning |
+| --- | --- |
+| `form` | `JSON` for exactly one JSON value, `MALFORMED` for any other output, `OVERSIZED` for more than 1 MiB, or `EMPTY` for no bytes. A target that never started is `EMPTY`. |
+| `size` | Every byte the target wrote, including bytes past 1 MiB. |
+| `sha256` | SHA-256 of every byte the target wrote. |
+| `truncated` | `true` when `bytes` is a prefix. Omitted when `false`. |
+| `bytes` | Base64 of the bytes the run kept. Omitted when empty. |
 
-```json
-{
-  "case_id": "case-2", "scorer_id": "exact-required", "required": true, "transition": "REGRESSED",
-  "from": {"cell": "PASSING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 1,
-           "output": {"form": "JSON", "size": 17, "sha256": "863528c9b14f3ea195d472c71227d5a606cecb578932bdad916d7f01511e4671",
-                      "truncated": false, "complete": true, "preview": "{\"answer\":\"yes\"}\n"}},
-  "to":   {"cell": "FAILING", "case_state": "SCORED", "status": "SUCCEEDED", "score": 0,
-           "output": {"form": "JSON", "size": 16, "sha256": "424d38bfd14d06dea6829f4745fd6a0e9a8591644d4fd1c836ae1045408d062b",
-                      "truncated": false, "complete": true, "preview": "{\"answer\":\"no\"}\n"}}
-}
-```
+`subject` is `{case_index, case_id}` for CASE diagnostics and adds `scorer_id` for SCORER diagnostics. `case_index` is the position in `cases`, so it tells apart duplicate and empty IDs. RUN diagnostics, and diagnostics from evalkit 0.6.0 and earlier, have no `subject`.
 
-Real output when the candidate's target prints `partial`, writes a marker to stderr and exits 1 (`jq '.changes[0].to'`, exit 3). The marker is in none of the artifact files, nor in the `run` stdout:
+### Inspect output
 
-```json
-{"cell": "UNKNOWN", "case_state": "ERRORED", "status": "ERRORED", "score": null,
- "output": {"form": "MALFORMED", "size": 7, "sha256": "9834a14ab9bcaa0f6a8da71073617eac8f004e596a3fa11d807b84631b825d9d",
-            "truncated": false, "complete": true, "preview": "partial"},
- "diagnostics": [{"code": "TARGET_EXECUTION_ERROR", "scope": "CASE", "message": "target process failed"}]}
-```
+| Field | Meaning |
+| --- | --- |
+| `schema_version`, `run_id`, `state`, `quality`, `config_digest` | From the run record. `state` is always `COMPLETED`. |
+| `integrity` | `SELF_CONSISTENT`. The checksums in `commit.json` match the files. |
+| `measurement_accounting` | `REPORTED_DEFINITION_CONSISTENT` when the verdict follows from the retained contract. `NOT_RETAINED` for artifacts from evalkit 0.4 and earlier. |
+| `retained_output` | From the run record. Omitted for artifacts from evalkit 0.6.0 and earlier. |
+| `authenticated_author` | Always `false`. |
 
-In Go, `sdk.Endpoint` gains `Output` and `Diagnostics`, `Change.OutputChanged()` reports whether the two runs' outputs differ (and whether both sides kept one), and `Inspection.RetainedOutput()` returns `retained_output`.
+### Compare output
 
-Limits:
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | 1. |
+| `recommendation` | `SHIP`, `ITERATE`, or `INVESTIGATE`, from the candidate's quality alone. |
+| `baseline`, `candidate` | `{run_id, quality}`. |
+| `counts` | The number of cells for each transition, over every cell. All five keys are always present. |
+| `changes` | The cells whose state or score changed, in case order and then scorer order. Each is `{case_id, scorer_id, required, transition, from, to}`. |
+| `from`, `to` | `{cell, case_state, status, score, output, diagnostics}`. `output` and `diagnostics` are omitted for a side that kept none. |
+| `output` | `{form, size, sha256, truncated, complete, preview}`. `preview` is the first 1 KiB as valid UTF-8. `complete` is `true` when `preview` is every byte the target wrote. Equal `size` and `sha256` on both sides mean the target wrote the same bytes, even when both are truncated. |
+| `diagnostics` | The case's CASE diagnostics and that change's scorer's SCORER diagnostics, as `{code, scope, message}`. |
 
-- Artifacts from v0.6.0 and earlier verify, inspect and compare exactly as before. They have no `output`, `subject` or `retained_output`, so neither command shows them.
-- evalkit v0.6.0 and earlier refuse V7 artifacts with `ARTIFACT_VERIFICATION_FAILED`, as v0.4 refused the `measurement` that v0.5 added.
-- evalkit never reads target stderr, but it keeps stdout. Treat every artifact directory, and the `run` stdout in your CI logs, as holding your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text. Print only the result JSON on stdout, and send logs, tokens and other secrets to stderr, which evalkit never reads.
-- If `run.json` would exceed the 16 MiB read limit, evalkit cuts every output to one common prefix length that fits, down to no bytes, which keeps form, size and SHA-256. If that does not fit either, the run keeps no output and records `retained_output: NONE`. If the run record does not fit even without outputs, the run fails with `ARTIFACT_COMMIT_FAILED` instead of publishing an artifact that `inspect` would refuse.
-- A cell is listed only when its state or score changes. A change of output alone lists nothing.
+A cell is one case under one scorer. A cell is `PASSING` when its case is `SCORED` and its scorer `SUCCEEDED` with a score at or above the threshold. It is `FAILING` when its case is `SCORED` and its scorer `SUCCEEDED` with a score below the threshold. Every other cell is `UNKNOWN`. When an `UNKNOWN` cell's own scorer succeeded, `case_state` shows why. A required scorer failed on the same case, so the case is `ERRORED`.
+
+| From | To `PASSING` | To `FAILING` | To `UNKNOWN` |
+| --- | --- | --- | --- |
+| `PASSING` | `UNCHANGED` | `REGRESSED` | `LOST_EVIDENCE` |
+| `FAILING` | `IMPROVED` | `UNCHANGED` | `LOST_EVIDENCE` |
+| `UNKNOWN` | `GAINED_EVIDENCE` | `GAINED_EVIDENCE` | `UNCHANGED` |
+
+- A score change alone, such as 0.6 to 0.9, is listed as `UNCHANGED`.
+- A status change inside `UNKNOWN`, such as `ERRORED` to `SKIPPED`, is not listed.
+- An output change alone is not listed.
+- A required scorer's `REGRESSED` cell makes the candidate `FAIL` or `INDETERMINATE`, so its recommendation is never `SHIP`.
+- An optional scorer's regression is listed but never changes the recommendation.
+- Two runs are comparable when their `measurement` contracts are identical. That means the same case IDs in the same order and the same scorers. `config_digest` is not compared and not printed.
+
+### Refusals
+
+A refusal is `{"error":{...},"schema_version":1}` on stdout, with exit 2. `error` has a `code` and a `scope`, and an `input` and a `reason` when they apply.
+
+| `code` | `scope` | `input` | `reason` | Cause |
+| --- | --- | --- | --- | --- |
+| `INVOCATION_INVALID` | `INVOCATION` | | | A flag is missing or unknown, or there is a positional argument. |
+| `ARTIFACT_VERIFICATION_FAILED` | `INSPECTION` or `COMPARISON` | `baseline` or `candidate` for `compare` | | The directory is missing, not `COMPLETED`, edited, or holds evidence evalkit cannot produce. `compare` verifies both inputs before it checks comparability. |
+| `COMPARISON_NOT_COMPARABLE` | `COMPARISON` | `baseline` or `candidate` | `MEASUREMENT_NOT_RETAINED` | The artifact has no `measurement`. |
+| `COMPARISON_NOT_COMPARABLE` | `COMPARISON` | | `CASES_DIFFER` | The case IDs differ, or their order differs. |
+| `COMPARISON_NOT_COMPARABLE` | `COMPARISON` | | `SCORERS_DIFFER` | A scorer's ID, kind, threshold, `required` flag, or `implementation` differs. |
+
+### Diagnostic codes
+
+Messages are fixed strings. evalkit never copies target stderr or scorer error text into them.
+
+| Code | Scope | Cause |
+| --- | --- | --- |
+| `CONFIG_INVALID` | RUN | The config failed validation. The message names the rule. |
+| `ARTIFACT_COMMIT_FAILED` | RUN | Publication failed. `DIR` exists, its parent is missing, `run.json` would exceed 16 MiB even without outputs, `report.json` would exceed 16 MiB, or a write, sync, or rename failed. |
+| `RUN_DEADLINE_EXCEEDED` | RUN | `--timeout` passed. The run is `CANCELLED`. |
+| `RUN_CANCELLED` | RUN | The SDK caller cancelled the context. The run is `CANCELLED`. |
+| `RUN_ID_UNAVAILABLE` | RUN | evalkit could not read random bytes for a run ID. |
+| `DATASET_INVALID_CASE` | CASE | The case is `INVALID`. |
+| `TARGET_EXECUTION_ERROR` | CASE | The target failed. The message is `target process failed`, `target output exceeds V1 size limit`, `target output must be exactly one JSON value`, or `cannot prepare target workspace`. |
+| `SCORER_OPERATION_ERROR` | SCORER | A custom scorer returned an error, after any retries. |
+| `SCORER_RESULT_INVALID` | SCORER | A custom scorer returned an invalid assessment. Its score is outside 0 to 1, NaN, or infinite, a scored result carries a reason, its unevaluable reason is unknown, or its kind is unknown, as for a zero `sdk.Assessment{}`. |
+
+### Limits
+
+| Limit | Value |
+| --- | --- |
+| Config file | 1 MiB |
+| Target stdout per case | 1 MiB. More is `OVERSIZED` and a `TARGET_EXECUTION_ERROR`. |
+| Retained output per run | 8 MiB, split evenly. Each case keeps up to 1 MiB or 8 MiB divided by the number of cases, whichever is smaller. That is all of it for up to 8 cases, about 82 KiB per case at 100 cases, and about 8 KiB at 1000. |
+| Evidence file read | 16 MiB for each of `run.json`, `report.json`, and `commit.json`. If `run.json` would pass it, `run` first cuts every output to the longest common prefix that fits. If even an empty prefix does not fit, it keeps no output and records `NONE`. If the record still does not fit, the run fails with `ARTIFACT_COMMIT_FAILED`. |
+| `concurrency` | 1 to 16 |
+| `scorer_max_attempts` | 1 to 10 executions |
+| Thresholds and scores | 0 to 1 |
+| `compare` preview | 1 KiB per side |
+| `--timeout` | 10 seconds by default, for the whole run |
+
+### Go SDK
+
+The package `github.com/ai-evals/evalkit/sdk` runs configs with custom scorers written in Go, and inspects and compares artifacts. [Run an evaluation from Go](#run-an-evaluation-from-go) shows a whole program.
+
+- `sdk.NewRunner(regs ...sdk.Registration)` registers scorers. An `ID` or `Implementation` that does not match the config fails the run with `CONFIG_INVALID`.
+- `sdk.Scored(v)` takes a score from 0 to 1. Any other value, or a zero `sdk.Assessment{}` with a nil error, is a `SCORER_RESULT_INVALID`. `sdk.Unevaluable(reason)` takes `sdk.ReasonEvidenceMissing`, `sdk.ReasonEvidenceInsufficient`, or `sdk.ReasonNotApplicable`, and makes a required scorer's case `ERRORED`.
+- Return `sdk.Retryable()` to run the scorer again within `scorer_max_attempts`. Any other error is a `SCORER_OPERATION_ERROR`.
+- evalkit never runs two calls of one registered scorer at the same time, even when `concurrency` is above 1.
+- `Runner.Run` returns an `sdk.Result` with `RunID`, `State`, `Quality`, and `JSON`. For a run that is not `COMPLETED` it also returns an `*sdk.RunError` with the last diagnostic's `Code`. `errors.Is(err, context.Canceled)` and `errors.Is(err, context.DeadlineExceeded)` report cancellation.
+- `sdk.NewInspector().Inspect(ctx, dir)` returns an `sdk.Inspection` with `RunID`, `Quality`, `Integrity`, `MeasurementAccounting`, `RetainedOutput`, and `JSON`.
+- `sdk.NewComparer().Compare(ctx, sdk.ComparisonRequest{BaselineDir: b, CandidateDir: c})` returns an `sdk.Comparison` with `Recommendation`, `Baseline`, `Candidate`, `Count`, `Changes`, and `JSON`. `JSON()` is the bytes `evalkit compare` prints, without the trailing newline. Each change's `From` and `To` carry `Output` and `Diagnostics`.
+- `Change.OutputChanged()` returns `(changed, known bool)`. `known` is `false` unless both sides retained the case's output, and then `changed` is `false` too. Otherwise `changed` is `true` when the outputs differ in `size` or `sha256`.
+- `Inspect` and `Compare` refuse with an `*sdk.ReadError` that has `Code`, `Scope`, `Input`, and `Reason`. On cancellation they return `context.Canceled` or `context.DeadlineExceeded` itself.
+
+## What evalkit guarantees and what it does not
+
+evalkit checks that a run's verdict follows from its evidence. It does not contain the code it runs. Keep those two apart when you decide what to trust.
+
+`inspect` and `compare` recompute each artifact's verdict from its own `measurement`, and they refuse an artifact whose stored verdict does not follow, even when its checksums match. `run` publishes an artifact by renaming a staging directory that it has fully written and synced, so a reader sees a whole artifact or none. A repeated run never overwrites an artifact. A cancelled run, or a run that fails before the rename, publishes nothing.
+
+evalkit is not a sandbox. Your target runs as your user, with `PATH`, in a temporary directory, with the network and file access your user has. evalkit gives the target its own process group and kills that group at the deadline, but a target that starts a new session escapes the kill. evalkit has no built-in model providers and loads no plugins. Custom Go scorers are code compiled into your program, and they run in your process as trusted code. evalkit passes them a context, but it cannot interrupt one that ignores it.
+
+The checksums prove that an artifact is self-consistent, not who wrote it. Anyone who can write the directory can change a file and re-hash it, so `authenticated_author` is always `false`. Treat an artifact as evidence from whoever controls its storage.
+
+evalkit never reads target stderr, and it keeps stdout. Every artifact directory, and the `run` stdout in your CI logs, holds your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text. Print only the answer on stdout, and send logs, tokens, and other secrets to stderr.
+
+Old binaries refuse newer artifacts. evalkit decodes artifacts strictly, so a field it does not know makes the artifact fail verification. evalkit 0.6.0 and earlier refuse artifacts from 0.7.0 with `ARTIFACT_VERIFICATION_FAILED`, as 0.4 refused the `measurement` that 0.5 added. Newer binaries read older artifacts, and evalkit 0.7.0 prints the same `inspect` and `compare` output for 0.6.0 artifacts as 0.6.0 did. Upgrade every machine that reads artifacts before, or together with, the machines that write them.
+
+Some hardening is not done yet. evalkit does not reserve the artifact path atomically against a concurrent writer. No test injects crashes or faults around the rename and the directory sync. If the sync of the parent directory fails after the rename, `run` reports `ARTIFACT_COMMIT_FAILED` although `DIR` holds the whole artifact. The file reader rejects symlinks and oversized files, but it is not hardened against a concurrent attacker on the same host. evalkit also has no durable retry scheduler, no transaction recovery, and no accounting for cleanup that may not have finished, such as a staging directory left behind.
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) before you change evalkit. It lists the verification commands, the contracts to keep, and the release rules, for people and coding agents. [CHANGELOG.md](CHANGELOG.md) records every release.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
