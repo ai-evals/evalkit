@@ -2,6 +2,12 @@
 
 Changes to evalkit up to 0.5.0 were recorded by vertical slice. From 0.5.1 on, each release's section is generated from its Conventional Commits by `internal/release` when the release is published; existing sections are never rewritten.
 
+## [0.8.0] - 2026-11-03
+
+### Features
+
+- **v8:** score cases with command scorers (#16) (937e080)
+
 ## [0.7.0] - 2026-11-02
 
 ### Features
