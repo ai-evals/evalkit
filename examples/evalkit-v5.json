@@ -1,0 +1,12 @@
+{
+  "version": 5,
+  "cases": [
+    {"id": "case-1", "input": {"question": "ready?"}, "expected": {"answer": "yes"}},
+    {"id": "case-2", "input": {"question": "still ready?"}, "expected": {"answer": "yes, ready"}}
+  ],
+  "target": {"command": "/ABSOLUTE/PATH/TO/evalkit-example-target", "args": []},
+  "scorers": [
+    {"id": "overlap", "kind": "command", "command": "/ABSOLUTE/PATH/TO/evalkit-example-scorer", "threshold": 0.5, "required": true}
+  ],
+  "execution": {"concurrency": 2, "scorer_max_attempts": 2}
+}

@@ -28,10 +28,11 @@ import (
 
 // ---- bounded domain -------------------------------------------------------
 
-// Custom scorer behaviours. Every outcome evaluateCase can see from a custom
-// scorer is represented: valid scores below/at/above every threshold, a valid
-// UNEVALUABLE, an invalid candidate, a permanent error, a transient error that
-// recovers on the second attempt, and a transient error that never recovers.
+// Custom and command scorer behaviours. Every outcome evaluateCase can see
+// from either kind is represented: valid scores below/at/above every
+// threshold, a valid UNEVALUABLE, an invalid candidate, a permanent error, a
+// transient error that recovers on the second attempt, and a transient error
+// that never recovers.
 var customBehaviours = []string{"scored0", "scored0.5", "scored1", "uneval", "invalid", "perm", "transOK", "transForever"}
 
 // exact_match behaviours: target output equals / differs from expected.
@@ -44,10 +45,39 @@ var attemptBudgets = []int{1, 2}
 // The target is /bin/sh echoing the request line, so exact_match "match"
 // cases expect the request itself. Case IDs starting with "tfail" print the
 // 7 bytes "partial" and exit 3, so a failed target has stdout to retain.
+// commandScript is every command scorer: $1 prefixes its per-case execution
+// log, and the remaining "caseID=behaviour" arguments choose what it does.
+// A command scorer signals a transient error by exiting 75.
+const commandScript = `IFS= read -r line
+id=${line#*'"case_id":"'}; id=${id%%'"'*}
+log="$1.$id"; shift
+echo x >> "$log"
+beh=
+for a; do case "$a" in "$id="*) beh=${a#*=};; esac; done
+case "$beh" in
+scored0) echo '{"score":0}';;
+scored0.5) echo '{"score":0.5}';;
+scored1) echo '{"score":1}';;
+uneval) echo '{"unevaluable":"EVIDENCE_MISSING"}';;
+invalid) echo '{"score":1.5}';;
+perm) exit 1;;
+transOK) n=$(wc -l < "$log"); [ $((n)) -ge 2 ] && { echo '{"score":1}'; exit 0; }; exit 75;;
+transForever) exit 75;;
+*) exit 9;;
+esac`
+
+var scorerKinds = []string{"custom", "exact_match", "command"}
+
+// commandThreshold is the only threshold in shapes with a command scorer, to
+// keep run.sh near three minutes. Thresholds act on a stored score the same
+// way for every kind, which the custom shapes cover at both thresholds, and
+// 0.5 still puts the scores 0, 0.5 and 1 below, at and above it.
+const commandThreshold = 0.5
+
 const targetScript = `IFS= read -r line; case "$line" in *'"case_id":"tfail'*) printf partial; exit 3;; esac; printf '%s\n' "$line"`
 
 type runShape struct {
-	kinds    [2]string // "custom" | "exact_match"
+	kinds    [2]string // one of scorerKinds
 	required [2]bool
 	thr      [2]float64
 	attempts int
@@ -65,7 +95,7 @@ func (s runShape) String() string {
 }
 
 func behavioursFor(kind string) []string {
-	if kind == "custom" {
+	if kind != "exact_match" {
 		return customBehaviours
 	}
 	return exactBehaviours
@@ -73,12 +103,15 @@ func behavioursFor(kind string) []string {
 
 func allShapes() []runShape {
 	var out []runShape
-	for _, k0 := range []string{"custom", "exact_match"} {
-		for _, k1 := range []string{"custom", "exact_match"} {
+	for _, k0 := range scorerKinds {
+		for _, k1 := range scorerKinds {
 			for _, req := range requiredSets {
 				for _, t0 := range thresholds {
 					for _, t1 := range thresholds {
 						for _, a := range attemptBudgets {
+							if (k0 == "command" || k1 == "command") && (t0 != commandThreshold || t1 != commandThreshold) {
+								continue
+							}
 							out = append(out, runShape{[2]string{k0, k1}, req, [2]float64{t0, t1}, a})
 						}
 					}
@@ -100,6 +133,8 @@ type obs struct {
 func f(v float64) *float64 { return &v }
 
 func oracleScorer(kind, beh string, attempts int) obs {
+	// A command scorer has the custom scorer's contract, so the two kinds
+	// share every behaviour's expected observation.
 	if kind == "exact_match" {
 		if beh == "match" {
 			return obs{"SUCCEEDED", f(1), 1}
@@ -181,9 +216,12 @@ func oracleVerdict(s runShape, cases []caseSpec) string {
 
 // ---- driving the real engine ---------------------------------------------
 
+// callCounter counts custom scorer calls in memory and command scorer
+// executions through the log files commandScript appends to under dir.
 type callCounter struct {
-	mu sync.Mutex
-	n  map[string]int
+	mu  sync.Mutex
+	n   map[string]int
+	dir string
 }
 
 func (c *callCounter) inc(k string) int {
@@ -194,9 +232,31 @@ func (c *callCounter) inc(k string) int {
 }
 func (c *callCounter) get(k string) int { c.mu.Lock(); defer c.mu.Unlock(); return c.n[k] }
 
+func (c *callCounter) executions(caseID, scorer string) int {
+	log, _ := os.ReadFile(filepath.Join(c.dir, scorer+"."+caseID))
+	return strings.Count(string(log), "\n")
+}
+
 var errPermanent = errors.New("permanent scorer failure")
 
 func scorerID(j int) string { return fmt.Sprintf("s%d", j) }
+
+var commandScripts sync.Map
+
+// commandScriptFor writes commandScript once per top-level test. macOS scans
+// each newly written executable on its first start, which made a fresh
+// script per run cost about 100 ms.
+func commandScriptFor(t *testing.T) string {
+	if path, ok := commandScripts.Load(t); ok {
+		return path.(string)
+	}
+	path := filepath.Join(t.TempDir(), "scorer.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+commandScript+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	actual, _ := commandScripts.LoadOrStore(t, path)
+	return actual.(string)
+}
 
 func buildRun(t *testing.T, s runShape, cases []caseSpec, concurrency int) ([]byte, map[string]RegisteredScorer, *callCounter) {
 	t.Helper()
@@ -213,11 +273,19 @@ func buildRun(t *testing.T, s runShape, cases []caseSpec, concurrency int) ([]by
 		}
 		cfgCases = append(cfgCases, map[string]any{"id": c.id, "input": input, "expected": expected})
 	}
-	counter := &callCounter{n: map[string]int{}}
+	counter := &callCounter{n: map[string]int{}, dir: t.TempDir()}
+	script := commandScriptFor(t)
 	custom := map[string]RegisteredScorer{}
 	var scorers []map[string]any
 	for j := 0; j < 2; j++ {
 		sc := map[string]any{"id": scorerID(j), "kind": s.kinds[j], "threshold": s.thr[j], "required": s.required[j]}
+		if s.kinds[j] == "command" {
+			args := []string{filepath.Join(counter.dir, scorerID(j))}
+			for _, c := range cases {
+				args = append(args, c.id+"="+c.beh[j])
+			}
+			sc["command"], sc["args"] = script, args
+		}
 		if s.kinds[j] == "custom" {
 			j := j
 			sc["implementation"] = "formal/" + scorerID(j)
@@ -250,7 +318,7 @@ func buildRun(t *testing.T, s runShape, cases []caseSpec, concurrency int) ([]by
 		scorers = append(scorers, sc)
 	}
 	raw, err := json.Marshal(map[string]any{
-		"version":   4,
+		"version":   5,
 		"cases":     cfgCases,
 		"target":    map[string]any{"command": "/bin/sh", "args": []string{"-c", targetScript}},
 		"scorers":   scorers,
@@ -309,8 +377,11 @@ func checkRun(t *testing.T, s runShape, cases []caseSpec, concurrency int) []str
 				bad = append(bad, fmt.Sprintf("%s case %s scorer %s (%s %s): got %s/%s/attempts=%d, want %s/%s/attempts=%d",
 					where, c.id, scorerID(j), s.kinds[j], c.beh[j], g.Status, scoreStr(g.Score), g.Attempts, w.status, scoreStr(w.score), w.attempts))
 			}
-			if s.kinds[j] == "custom" {
+			if s.kinds[j] != "exact_match" {
 				calls := counter.get(c.id + "/" + scorerID(j))
+				if s.kinds[j] == "command" {
+					calls = counter.executions(c.id, scorerID(j))
+				}
 				if calls != w.attempts || calls > s.attempts {
 					bad = append(bad, fmt.Sprintf("%s case %s scorer %s: scorer executed %d times, recorded %d, budget %d", where, c.id, scorerID(j), calls, g.Attempts, s.attempts))
 				}

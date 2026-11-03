@@ -258,7 +258,8 @@ You have published, inspected, and compared two runs, and traced a regression to
 Pick the version by where your scorers run:
 
 - To score answers by exact JSON equality from the CLI, use version 3.
-- To score answers with your own Go code, use version 4 and [run it from Go](#run-an-evaluation-from-go). The CLI rejects a `custom` scorer with `CONFIG_INVALID`.
+- To score answers with your own program in any language from the CLI, use version 5 and [score with your own program](#score-with-your-own-program).
+- To score answers with your own Go code, use version 4 or 5 and [run it from Go](#run-an-evaluation-from-go). The CLI rejects a `custom` scorer with `CONFIG_INVALID`.
 - Versions 1 and 2 still run. [Configuration](#configuration) lists the fields that each version accepts.
 
 To write a version 3 config:
@@ -270,9 +271,45 @@ To write a version 3 config:
 5. Make your target read its stdin line and answer as [Target protocol](#target-protocol) describes.
 6. Run the config once. If it is invalid, `run` prints `"state":"FAILED"` with a `CONFIG_INVALID` diagnostic whose message names the problem, and exits 2.
 
+### Score with your own program
+
+A command scorer is a program that reads one case and prints a score. Write it in any language, and run it from `evalkit run` with a version 5 config. This guide continues in the clone from the [Quickstart](#quickstart) and uses the example scorer in `examples/scorer`, which scores the target's `answer` by how many words it shares with the expected `answer`.
+
+1. Build the example target and scorer:
+
+   ```sh
+   go build -o tour/example-target ./examples/target
+   go build -o tour/example-scorer ./examples/scorer
+   ```
+
+2. Copy `examples/evalkit-v5.json` to `tour/evalkit-v5.json`. Set `target.command` to the absolute path of `tour/example-target`, and the scorer's `command` to the absolute path of `tour/example-scorer`.
+3. Run it:
+
+   ```sh
+   tour/evalkit run --config tour/evalkit-v5.json --artifact-dir tour/runs/v5 | jq -c '[.quality, [.cases[].scorers[0].score]]'
+   ```
+
+   ```text
+   ["PASS",[1,0.6666666666666666]]
+   ```
+
+   The target answers `yes` to both cases. `case-2` expects `yes, ready`, so it shares one of two words and scores 0.67, above the threshold of 0.5.
+
+To write your own scorer, read one line from stdin and print one JSON object, as [Scorer protocol](#scorer-protocol) describes. A shell scorer that gives full marks to any answer looks like this:
+
+```sh
+#!/bin/sh
+cat >/dev/null
+echo '{"score":1}'
+```
+
+Exit 75 when a failure is temporary, such as a rate limit, and evalkit runs the scorer again within `scorer_max_attempts`. Print `{"unevaluable":"EVIDENCE_MISSING"}` when the case lacks what the scorer needs. A required scorer that is unevaluable makes its case `ERRORED` and the run `INDETERMINATE`.
+
+`compare` treats a scorer's `command` and `args` as part of the measurement. Name the scorer by the same path or program name in every run you compare, and change `args` only together with a new baseline.
+
 ### Run an evaluation from Go
 
-To score answers with your own Go code, run a version 4 config through the package `github.com/ai-evals/evalkit/sdk`. Create a module and add evalkit:
+To score answers with your own Go code, run a version 4 or 5 config through the package `github.com/ai-evals/evalkit/sdk`. Create a module and add evalkit:
 
 ```sh
 mkdir evalkit-sdk-example && cd evalkit-sdk-example
@@ -420,7 +457,7 @@ Find the `code`, or the `reason` when there is one. [Refusals](#refusals) gives 
 
 - `INVOCATION_INVALID`. Pass `--artifact-dir` to `inspect`, and both `--baseline` and `--candidate` to `compare`.
 - `ARTIFACT_VERIFICATION_FAILED`. Check the path, which `input` names for `compare`. If a newer evalkit may have written the directory, upgrade and try again. Otherwise run the evaluation again.
-- `CASES_DIFFER` or `SCORERS_DIFFER`. Publish a new baseline with the candidate's config. An upgrade of a custom scorer from `@1` to `@2` is a `SCORERS_DIFFER` too.
+- `CASES_DIFFER` or `SCORERS_DIFFER`. Publish a new baseline with the candidate's config. An upgrade of a custom scorer from `@1` to `@2` is a `SCORERS_DIFFER` too, and so is a change to a command scorer's `command` or `args`.
 - `MEASUREMENT_NOT_RETAINED`. Run the evaluation that `input` names again with the current evalkit.
 
 `run` never refuses. When it cannot reach a verdict, it prints its record with `state` set to `FAILED` or `CANCELLED` and a RUN diagnostic, and exits 2. For `ARTIFACT_COMMIT_FAILED`, pass an `--artifact-dir` that does not exist yet, inside a directory that does. For `RUN_DEADLINE_EXCEEDED`, raise `--timeout`.
@@ -465,18 +502,18 @@ Find the `code`, or the `reason` when there is one. [Refusals](#refusals) gives 
 
 ### Configuration
 
-A config is one JSON value of at most 1 MiB. Unknown fields are errors. `version` is required, and versions 1, 2, 3, and 4 are supported.
+A config is one JSON value of at most 1 MiB. Unknown fields are errors. `version` is required, and versions 1, 2, 3, 4, and 5 are supported.
 
 | Field | Versions | Rules |
 | --- | --- | --- |
 | `case` | 1 | `{id, input, expected}`. `id` is not empty. `input` and `expected` are each one JSON value. |
 | `scorer` | 1 | `{kind, threshold}`. `kind` is `exact_match`. `threshold` is from 0 to 1. |
-| `cases` | 2, 3, 4 | A non-empty list of `{id, input, expected}`. An invalid entry becomes an `INVALID` case, not a config error. |
+| `cases` | 2 to 5 | A non-empty list of `{id, input, expected}`. An invalid entry becomes an `INVALID` case, not a config error. |
 | `target` | All | `{command, args}`. `command` is not empty. `args` is an optional list of strings. |
-| `scorers` | 2, 3, 4 | A non-empty list of `{id, kind, threshold, required, implementation}`. IDs are not empty and are unique. `threshold` is from 0 to 1. At least one scorer is `required`. `kind` is `exact_match`, or `custom` in version 4 through the SDK. A `custom` scorer needs an `implementation` that matches its SDK registration. |
-| `execution` | 3, 4 | `{concurrency, scorer_max_attempts}`, both required. `concurrency` is from 1 to 16. `scorer_max_attempts` is from 1 to 10 and counts executions, not retries. Versions 1 and 2 run one case at a time. |
+| `scorers` | 2 to 5 | A non-empty list of `{id, kind, threshold, required, implementation, command, args}`. IDs are not empty and are unique. `threshold` is from 0 to 1. At least one scorer is `required`. `kind` is `exact_match`, `custom` in versions 4 and 5 through the SDK, or `command` in version 5. A `custom` scorer needs an `implementation` that matches its SDK registration. A `command` scorer needs a `command` that is not blank, takes optional `args`, and has no `implementation`. Only `command` scorers take `command` and `args`. |
+| `execution` | 3 to 5 | `{concurrency, scorer_max_attempts}`, both required. `concurrency` is from 1 to 16. `scorer_max_attempts` is from 1 to 10 and counts executions, not retries. Versions 1 and 2 run one case at a time. |
 
-`exact_match` scores 1 when the target's answer equals `expected` and 0 otherwise. It compares JSON values by structure, and numbers by their text, so `1` and `1.0` differ. It never fails, so `scorer_max_attempts` affects only custom scorers.
+`exact_match` scores 1 when the target's answer equals `expected` and 0 otherwise. It compares JSON values by structure, and numbers by their text, so `1` and `1.0` differ. It never fails, so `scorer_max_attempts` affects only custom and command scorers.
 
 ### Target protocol
 
@@ -487,6 +524,19 @@ A config is one JSON value of at most 1 MiB. Unknown fields are errors. `version
 - evalkit discards stderr.
 - Each case runs the target once. evalkit never retries a target.
 - At the deadline, evalkit starts no new case, kills each running target's process group, and waits up to 2 seconds for it to exit.
+
+### Scorer protocol
+
+In a version 5 config, a `command` scorer runs for each case whose target succeeded, once per attempt.
+
+- evalkit starts `command` with `args` and no shell, in a new temporary directory, with only `PATH` in its environment, in its own process group. `command` is an absolute path or a program name on evalkit's `PATH`.
+- stdin holds one line, such as `{"case_id":"case-2","scorer_id":"overlap","input":{"question":"still ready?"},"expected":{"answer":"yes, ready"},"output":{"answer":"yes"}}`. `input` and `expected` come from the case. `output` is the target's answer, the value `exact_match` compares.
+- The scorer answers by exiting 0 and printing exactly one JSON object, of at most 1 MiB, on stdout. The object holds exactly one key, `score` with a number from 0 to 1, or `unevaluable` with `EVIDENCE_MISSING`, `EVIDENCE_INSUFFICIENT`, or `EVIDENCE_NOT_APPLICABLE`. Any other stdout is a `SCORER_RESULT_INVALID`.
+- Exit 75, `EX_TEMPFAIL`, asks for another attempt. evalkit runs the scorer again until `scorer_max_attempts` executions, then records `SCORER_OPERATION_ERROR`.
+- Any other exit status, a signal, or a scorer that does not start is a `SCORER_OPERATION_ERROR` with no retry.
+- evalkit discards stderr. It keeps only the score or the reason, never other stdout.
+- Several scorers can run at the same time, one per case worker, when `concurrency` is above 1.
+- At the deadline, evalkit kills each running scorer's process group, as it does for targets, and publishes nothing.
 
 ### Artifact directory
 
@@ -508,7 +558,7 @@ Fields of the run record:
 | `quality` | `PASS`, `FAIL`, `INDETERMINATE`, or `null`. |
 | `config_digest` | SHA-256 of the prefix `evalkit:vN:config:\x00`, where `N` is the config version, followed by the canonical JSON of the decoded config, target included. |
 | `case` | Version 1 only. `{id, target_status, scorer_status, score, output}`. |
-| `cases` | Versions 2 to 4. A list of `{id, state, target_status, scorers, output}` in config order. |
+| `cases` | Versions 2 to 5. A list of `{id, state, target_status, scorers, output}` in config order. |
 | `cases[].state` | `SCORED`, `ERRORED`, or `INVALID`. |
 | `cases[].target_status` | `SUCCEEDED`, `ERRORED`, or `SKIPPED`. |
 | `cases[].scorers` | One `{id, status, score, attempts, reason}` per scorer, in config order. `status` is `SUCCEEDED`, `ERRORED`, `UNEVALUABLE`, or `SKIPPED`. `score` is present only for `SUCCEEDED`. `reason` is present only for `UNEVALUABLE`. `attempts` is omitted for `SKIPPED` scorers and for scorers `ERRORED` by a failed target. |
@@ -592,8 +642,8 @@ Messages are fixed strings. evalkit never copies target stderr or scorer error t
 | `RUN_ID_UNAVAILABLE` | RUN | evalkit could not read random bytes for a run ID. |
 | `DATASET_INVALID_CASE` | CASE | The case is `INVALID`. |
 | `TARGET_EXECUTION_ERROR` | CASE | The target failed. The message is `target process failed`, `target output exceeds V1 size limit`, `target output must be exactly one JSON value`, or `cannot prepare target workspace`. |
-| `SCORER_OPERATION_ERROR` | SCORER | A custom scorer returned an error, after any retries. |
-| `SCORER_RESULT_INVALID` | SCORER | A custom scorer returned an invalid assessment. Its score is outside 0 to 1, NaN, or infinite, a scored result carries a reason, its unevaluable reason is unknown, or its kind is unknown, as for a zero `sdk.Assessment{}`. |
+| `SCORER_OPERATION_ERROR` | SCORER | A custom scorer returned an error, or a command scorer exited non-zero, was killed by a signal, or did not start, after any retries. |
+| `SCORER_RESULT_INVALID` | SCORER | A custom scorer returned an invalid assessment. Its score is outside 0 to 1, NaN, or infinite, a scored result carries a reason, its unevaluable reason is unknown, or its kind is unknown, as for a zero `sdk.Assessment{}`. For a command scorer, its stdout was not one JSON object with exactly one of `score` or `unevaluable`, held a score outside 0 to 1 or an unknown reason, or exceeded 1 MiB. |
 
 ### Limits
 
@@ -601,6 +651,7 @@ Messages are fixed strings. evalkit never copies target stderr or scorer error t
 | --- | --- |
 | Config file | 1 MiB |
 | Target stdout per case | 1 MiB. More is `OVERSIZED` and a `TARGET_EXECUTION_ERROR`. |
+| Command scorer stdout per attempt | 1 MiB. More is a `SCORER_RESULT_INVALID`. |
 | Retained output per run | 8 MiB, split evenly. Each case keeps up to 1 MiB or 8 MiB divided by the number of cases, whichever is smaller. That is all of it for up to 8 cases, about 82 KiB per case at 100 cases, and about 8 KiB at 1000. |
 | Evidence file read | 16 MiB for each of `run.json`, `report.json`, and `commit.json`. If `run.json` would pass it, `run` first cuts every output to the longest common prefix that fits. If even an empty prefix does not fit, it keeps no output and records `NONE`. If the record still does not fit, the run fails with `ARTIFACT_COMMIT_FAILED`. |
 | `concurrency` | 1 to 16 |
@@ -611,7 +662,7 @@ Messages are fixed strings. evalkit never copies target stderr or scorer error t
 
 ### Go SDK
 
-The package `github.com/ai-evals/evalkit/sdk` runs configs with custom scorers written in Go, and inspects and compares artifacts. [Run an evaluation from Go](#run-an-evaluation-from-go) shows a whole program.
+The package `github.com/ai-evals/evalkit/sdk` runs configs with custom scorers written in Go, and inspects and compares artifacts. It runs version 5 configs too, so one config can mix custom and command scorers. [Run an evaluation from Go](#run-an-evaluation-from-go) shows a whole program.
 
 - `sdk.NewRunner(regs ...sdk.Registration)` registers scorers. An `ID` or `Implementation` that does not match the config fails the run with `CONFIG_INVALID`.
 - `sdk.Scored(v)` takes a score from 0 to 1. Any other value, or a zero `sdk.Assessment{}` with a nil error, is a `SCORER_RESULT_INVALID`. `sdk.Unevaluable(reason)` takes `sdk.ReasonEvidenceMissing`, `sdk.ReasonEvidenceInsufficient`, or `sdk.ReasonNotApplicable`, and makes a required scorer's case `ERRORED`.
@@ -631,11 +682,13 @@ evalkit checks that a run's verdict follows from its evidence. It does not conta
 
 evalkit is not a sandbox. Your target runs as your user, with `PATH`, in a temporary directory, with the network and file access your user has. evalkit gives the target its own process group and kills that group at the deadline, but a target that starts a new session escapes the kill. evalkit has no built-in model providers and loads no plugins. Custom Go scorers are code compiled into your program, and they run in your process as trusted code. evalkit passes them a context, but it cannot interrupt one that ignores it.
 
+A command scorer is not sandboxed either. It runs like a target, as your user, with only `PATH` in its environment, and it can escape its process group the same way. It reads the target's output on stdin, so treat that input as untrusted. A scorer that asks a language model to judge the answer can be steered by text the target prints, so a target can talk an LLM judge into a high score. evalkit stores each scorer's `command` and `args` in plain text in the `measurement` of `run.json` and in the `run` stdout, so never put a secret in them. Because the environment holds only `PATH`, a scorer that needs a credential has to load it itself.
+
 The checksums prove that an artifact is self-consistent, not who wrote it. Anyone who can write the directory can change a file and re-hash it, so `authenticated_author` is always `false`. Treat an artifact as evidence from whoever controls its storage.
 
 evalkit never reads target stderr, and it keeps stdout. Every artifact directory, and the `run` stdout in your CI logs, holds your target's answers. Base64 is an encoding, not protection, and it hides those answers from secret scanners that search for plain text. Print only the answer on stdout, and send logs, tokens, and other secrets to stderr.
 
-Old binaries refuse newer artifacts. evalkit decodes artifacts strictly, so a field it does not know makes the artifact fail verification. evalkit 0.6.0 and earlier refuse artifacts from 0.7.0 with `ARTIFACT_VERIFICATION_FAILED`, as 0.4 refused the `measurement` that 0.5 added. Newer binaries read older artifacts, and evalkit 0.7.0 prints the same `inspect` and `compare` output for 0.6.0 artifacts as 0.6.0 did. Upgrade every machine that reads artifacts before, or together with, the machines that write them.
+Old binaries refuse newer artifacts. evalkit decodes artifacts strictly, so a field it does not know makes the artifact fail verification. evalkit 0.6.0 and earlier refuse artifacts from 0.7.0 with `ARTIFACT_VERIFICATION_FAILED`, as 0.4 refused the `measurement` that 0.5 added. evalkit 0.7.0 refuses an artifact whose `measurement` holds a command scorer. It still reads an artifact without one, even when a newer evalkit wrote it. Newer binaries read older artifacts, and evalkit 0.7.0 prints the same `inspect` and `compare` output for 0.6.0 artifacts as 0.6.0 did. Upgrade every machine that reads artifacts before, or together with, the machines that write them.
 
 Some hardening is not done yet. evalkit does not reserve the artifact path atomically against a concurrent writer. No test injects crashes or faults around the rename and the directory sync. If the sync of the parent directory fails after the rename, `run` reports `ARTIFACT_COMMIT_FAILED` although `DIR` holds the whole artifact. The file reader rejects symlinks and oversized files, but it is not hardened against a concurrent attacker on the same host. evalkit also has no durable retry scheduler, no transaction recovery, and no accounting for cleanup that may not have finished, such as a staging directory left behind.
 

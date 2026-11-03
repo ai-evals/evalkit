@@ -6,7 +6,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 - `H=.claude/skills/verify-evalkit/scripts/verify-evalkit.sh`, run from the repo root.
 - `$H launch <id>` printed `READY`, and `$H doctor <id>` printed `HEALTHY`.
-- Configs come from `$H config <id> v1|v2|v3 pass|fail|indeterminate <name>`, rendered from `examples/evalkit*.json`.
+- Configs come from `$H config <id> v1|v2|v3|v5 pass|fail|indeterminate <name>`, rendered from `examples/evalkit*.json`.
 - Never drive a binary or scratch dir that this verification run did not create.
 
 ## Driving conventions
@@ -31,6 +31,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 ## Features
 
 - [Run an evaluation](./run.md) covers v1, v2, and v3 configs with PASS, FAIL, and INDETERMINATE verdicts and their exit codes.
+- [Command scorers](./command-scorer.md) covers version 5 configs whose scorer is a program, graded scores from the CLI, the scorer protocol's failure paths, and compare refusing a changed scorer program.
 - [Artifact publication](./artifacts.md) covers the published run/report/commit evidence, the retained target output, and the guarantee that a repeated run never overwrites it.
 - [Inspect a past run](./inspect.md) covers read-only inspection, tamper detection, and invocation errors.
 - [Compare two runs](./compare.md) covers the SHIP, ITERATE, and INVESTIGATE recommendations, the retained output and diagnostics that show why a cell moved, comparability and verification refusals, and invocation errors.

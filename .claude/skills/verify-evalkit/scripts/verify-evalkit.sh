@@ -9,6 +9,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 VERIFY_ROOT="${EVALKIT_VERIFY_ROOT:-${TMPDIR:-/tmp}}"
 VERIFY_ROOT="${VERIFY_ROOT%/}/evalkit-verify"
 PLACEHOLDER="/ABSOLUTE/PATH/TO/evalkit-example-target"
+SCORER_PLACEHOLDER="/ABSOLUTE/PATH/TO/evalkit-example-scorer"
 
 die() { echo "verify-evalkit: $*" >&2; exit 2; }
 dirs() {
@@ -23,7 +24,7 @@ cmd_launch() {
   [[ -e "$BASE" ]] && die "$BASE already exists; pick a new RUN_ID"
   mkdir -p "$SCRATCH" "$EVIDENCE"
   echo "$$ $(date -u +%FT%TZ)" > "$SCRATCH/.owner"
-  (cd "$REPO" && go build -o "$SCRATCH/evalkit" ./cmd/evalkit && go build -o "$SCRATCH/evalkit-example-target" ./examples/target)
+  (cd "$REPO" && go build -o "$SCRATCH/evalkit" ./cmd/evalkit && go build -o "$SCRATCH/evalkit-example-target" ./examples/target && go build -o "$SCRATCH/evalkit-example-scorer" ./examples/scorer)
   { echo "repo=$REPO"; echo "commit=$(git -C "$REPO" rev-parse HEAD)";
     echo "dirty=$(git -C "$REPO" status --porcelain -- cmd internal sdk examples go.mod | wc -l | tr -d ' ')";
     echo "go=$(go version)"; echo "built=$(date -u +%FT%TZ)"; } > "$EVIDENCE/build.txt"
@@ -36,6 +37,7 @@ cmd_doctor() {
   check "scratch owned by harness" '[[ -f "$SCRATCH/.owner" ]]'
   check "evalkit binary executable" '[[ -x "$SCRATCH/evalkit" ]]'
   check "example target executable" '[[ -x "$SCRATCH/evalkit-example-target" ]]'
+  check "example scorer executable" '[[ -x "$SCRATCH/evalkit-example-scorer" ]]'
   check "binary answers version" '"$SCRATCH/evalkit" version | grep -q "^evalkit "'
   check "binary built from current HEAD" '[[ "$(sed -n "s/^commit=//p" "$EVIDENCE/build.txt")" == "$(git -C "$REPO" rev-parse HEAD)" ]]'
   check "no source edits since build" '[[ -z "$(find "$REPO/cmd" "$REPO/internal" "$REPO/sdk" "$REPO/examples" "$REPO/go.mod" \( -name "*.go" -o -name go.mod \) -newer "$EVIDENCE/build.txt" -print -quit 2>/dev/null)" ]]'
@@ -43,19 +45,20 @@ cmd_doctor() {
   [[ $ok == 1 ]] && echo "HEALTHY run_id=$RUN_ID" || { echo "UNHEALTHY: rebuild with a new launch"; return 1; }
 }
 
-# config RUN_ID SOURCE(v1|v2|v3) VARIANT(pass|fail|indeterminate) NAME
+# config RUN_ID SOURCE(v1|v2|v3|v5) VARIANT(pass|fail|indeterminate) NAME
 cmd_config() {
   dirs "${1:-}"; need_launched
   local src="$2" variant="$3" name="$4" in out
-  case "$src" in v1) in="$REPO/examples/evalkit.json";; v2|v3) in="$REPO/examples/evalkit-$src.json";; *) die "source must be v1|v2|v3";; esac
+  case "$src" in v1) in="$REPO/examples/evalkit.json";; v2|v3|v5) in="$REPO/examples/evalkit-$src.json";; *) die "source must be v1|v2|v3|v5";; esac
   out="$SCRATCH/$name.json"
   [[ -e "$out" ]] && die "$out exists"
+  local scorer="s#$SCORER_PLACEHOLDER#$SCRATCH/evalkit-example-scorer#"
   case "$variant" in
-    pass) sed "s#$PLACEHOLDER#$SCRATCH/evalkit-example-target#" "$in" > "$out";;
+    pass) sed -e "s#$PLACEHOLDER#$SCRATCH/evalkit-example-target#" -e "$scorer" "$in" > "$out";;
     # last case's expected answer becomes "no"; the example target always answers "yes"
-    fail) sed "s#$PLACEHOLDER#$SCRATCH/evalkit-example-target#" "$in" | awk '{l[NR]=$0} /"expected"/{n=NR} END{for(i=1;i<=NR;i++){if(i==n){sub(/"yes"/,"\"no\"",l[i])} print l[i]}}' > "$out";;
+    fail) sed -e "s#$PLACEHOLDER#$SCRATCH/evalkit-example-target#" -e "$scorer" "$in" | awk '{l[NR]=$0} /"expected"/{n=NR} END{for(i=1;i<=NR;i++){if(i==n){sub(/"yes[^"]*"/,"\"no\"",l[i])} print l[i]}}' > "$out";;
     # /bin/echo ignores stdin and prints non-JSON: a malformed target result
-    indeterminate) sed -e "s#\"$PLACEHOLDER\"#\"/bin/echo\"#" -e 's#"args": \[\]#"args": ["not-json"]#' "$in" > "$out";;
+    indeterminate) sed -e "s#\"$PLACEHOLDER\"#\"/bin/echo\"#" -e 's#"args": \[\]#"args": ["not-json"]#' -e "$scorer" "$in" > "$out";;
     *) die "variant must be pass|fail|indeterminate";;
   esac
   cp "$out" "$EVIDENCE/config-$name.json"
@@ -96,7 +99,7 @@ cmd_cleanup() {
 case "${1:-}" in
   launch) shift; cmd_launch "$@";;
   doctor) shift; cmd_doctor "$@";;
-  config) shift; [[ $# == 4 ]] || die "usage: config RUN_ID v1|v2|v3 pass|fail|indeterminate NAME"; cmd_config "$@";;
+  config) shift; [[ $# == 4 ]] || die "usage: config RUN_ID v1|v2|v3|v5 pass|fail|indeterminate NAME"; cmd_config "$@";;
   run) shift; [[ $# -ge 2 ]] || die "usage: run RUN_ID LABEL -- <evalkit args>"; cmd_run "$@";;
   cleanup) shift; cmd_cleanup "$@";;
   path) shift; dirs "${1:-}"; echo "scratch=$SCRATCH evidence=$EVIDENCE";;

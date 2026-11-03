@@ -23,7 +23,7 @@ evalkit is short-lived: there is no server. Launch means building fresh binaries
 $H launch            # or: $H launch my-run-id
 ```
 
-Ready when it prints `READY run_id=<id> scratch=<dir> evidence=<dir>`. It builds `./cmd/evalkit` and `./examples/target` into `$TMPDIR/evalkit-verify/<id>/scratch/` and records the commit, the dirty-file count, and the Go version in `evidence/build.txt`. Launch refuses to reuse an existing RUN_ID. Set `EVALKIT_VERIFY_ROOT` to move the root.
+Ready when it prints `READY run_id=<id> scratch=<dir> evidence=<dir>`. It builds `./cmd/evalkit`, `./examples/target`, and `./examples/scorer` into `$TMPDIR/evalkit-verify/<id>/scratch/` and records the commit, the dirty-file count, and the Go version in `evidence/build.txt`. Launch refuses to reuse an existing RUN_ID. Set `EVALKIT_VERIFY_ROOT` to move the root.
 
 Never verify with an `evalkit` from `PATH` or Homebrew. That is a released build, not your change.
 
@@ -33,18 +33,18 @@ Never verify with an `evalkit` from `PATH` or Homebrew. That is a released build
 $H doctor <id>
 ```
 
-Read-only. It checks that the scratch dir was created by this harness, both binaries are executable, `evalkit version` answers, the build commit equals the current `HEAD`, and no `.go`/`go.mod` file under `cmd internal sdk examples` changed after the build. It ends with `HEALTHY` or `UNHEALTHY`. If you edit source after launch, doctor goes unhealthy. Launch a new run instead of driving a stale binary.
+Read-only. It checks that the scratch dir was created by this harness, the three binaries are executable, `evalkit version` answers, the build commit equals the current `HEAD`, and no `.go`/`go.mod` file under `cmd internal sdk examples` changed after the build. It ends with `HEALTHY` or `UNHEALTHY`. If you edit source after launch, doctor goes unhealthy. Launch a new run instead of driving a stale binary.
 
 ## Drive
 
-1. Render a config from the shipped examples. The placeholder `/ABSOLUTE/PATH/TO/evalkit-example-target` is replaced for you:
+1. Render a config from the shipped examples. The placeholders `/ABSOLUTE/PATH/TO/evalkit-example-target` and `/ABSOLUTE/PATH/TO/evalkit-example-scorer` are replaced for you:
 
    ```sh
-   C=$($H config <id> v1|v2|v3 pass|fail|indeterminate <name>)
+   C=$($H config <id> v1|v2|v3|v5 pass|fail|indeterminate <name>)
    ```
 
    - `pass`: the example target (always answers `{"answer":"yes"}`) matches every case.
-   - `fail`: the last case's expected answer is changed to `"no"`, so the required exact-match scorer scores it 0.
+   - `fail`: the last case's expected answer is changed to `"no"`, so the required exact-match scorer scores it 0. In v5 the example word-overlap scorer also scores it 0.
    - `indeterminate`: the target becomes `/bin/echo not-json`, which ignores stdin and returns a malformed result.
 
    For any other config, write the JSON into the scratch dir yourself (`$H path <id>` prints it). Use absolute target paths and no shell.
