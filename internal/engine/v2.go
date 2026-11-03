@@ -35,6 +35,10 @@ type V2Scorer struct {
 	Threshold      float64 `json:"threshold"`
 	Required       bool    `json:"required"`
 	Implementation string  `json:"implementation,omitempty"`
+	// Command and Args are set only for kind command, so the digests of
+	// version 2 to 4 configs and every older artifact are unchanged.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
 }
 
 type ScorerObservation struct {
@@ -56,10 +60,12 @@ type V2CaseResult struct {
 }
 
 func validateV2(raw []byte) (V2Config, string, error) {
-	return validateV2WithCustom(raw, nil)
+	return validateV2WithCustom(raw, nil, false)
 }
 
-func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V2Config, string, error) {
+// validateV2WithCustom validates the version 2 shape that versions 3 to 5
+// re-encode into. commandScorers is true only for version 5.
+func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer, commandScorers bool) (V2Config, string, error) {
 	var cfg V2Config
 	if len(raw) > maxConfigBytes {
 		return cfg, "", errors.New("configuration exceeds size limit")
@@ -75,6 +81,11 @@ func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V
 	}
 	if strings.TrimSpace(cfg.Target.Command) == "" {
 		return cfg, "", errors.New("target.command is required")
+	}
+	for _, scorer := range cfg.Scorers {
+		if !commandScorers && (scorer.Kind == "command" || scorer.Command != "" || len(scorer.Args) > 0) {
+			return cfg, "", errors.New("command scorers require configuration version 5")
+		}
 	}
 	if err := validateScorerContract(cfg.Scorers); err != nil {
 		return cfg, "", err
@@ -121,8 +132,18 @@ func validateScorerContract(scorers []V2Scorer) error {
 			if scorer.Implementation == "" {
 				return errors.New("custom scorer identity or registration unavailable")
 			}
+		case "command":
+			if strings.TrimSpace(scorer.Command) == "" {
+				return errors.New("command scorer requires a command")
+			}
+			if scorer.Implementation != "" {
+				return errors.New("command scorer takes no implementation")
+			}
 		default:
 			return errors.New("unsupported scorer kind")
+		}
+		if scorer.Kind != "command" && (scorer.Command != "" || len(scorer.Args) > 0) {
+			return errors.New("only command scorers take command and args")
 		}
 		if scorer.Required {
 			required++
@@ -148,7 +169,7 @@ func runV2(ctx context.Context, raw []byte, artifactDir string, o Outcome) Outco
 // are returned to the coordinator and committed in dataset ordinal order.
 // index is c's dataset ordinal, which attributes diagnostics because case IDs
 // are not unique.
-func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurrences int, maxAttempts int, custom map[string]RegisteredScorer) (V2CaseResult, []Diagnostic) {
+func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurrences int, maxAttempts int, assessors []assessor) (V2CaseResult, []Diagnostic) {
 	result := V2CaseResult{ID: c.ID, State: "PENDING"}
 	for _, sc := range cfg.Scorers {
 		result.Scorers = append(result.Scorers, ScorerObservation{ID: sc.ID, Status: "SKIPPED"})
@@ -182,25 +203,12 @@ func evaluateCase(ctx context.Context, cfg V2Config, index int, c V2Case, occurr
 	}
 	result.State = "SCORED"
 	result.TargetStatus = "SUCCEEDED"
-	actual, _ := decodeJSONValue(output.head)
-	expected, _ := decodeJSONValue(c.Expected)
 	var diagnostics []Diagnostic
 	requiredError := false
 	for i, sc := range cfg.Scorers {
-		var candidate AssessmentCandidate
-		var attempts int
-		var scoreErr error
-		if sc.Kind == "exact_match" {
-			var score float64
-			score, attempts, scoreErr = retryScorer(ctx, maxAttempts, func(context.Context) (float64, error) { return exactMatchScore(actual, expected), nil })
-			if scoreErr == nil {
-				candidate = AssessmentCandidate{Kind: "SCORED", Score: &score}
-			}
-		} else {
-			ext := custom[sc.ID]
-			input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Actual: append(json.RawMessage(nil), output.head...), Expected: append(json.RawMessage(nil), c.Expected...)}
-			candidate, attempts, scoreErr = retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return ext.Evaluate(ctx, input.Clone()) })
-		}
+		input := ScorerInput{CaseID: c.ID, ScorerID: sc.ID, Input: c.Input, Actual: output.head, Expected: c.Expected}
+		assess := assessors[i]
+		candidate, attempts, scoreErr := retryAssessment(ctx, maxAttempts, func(ctx context.Context) (AssessmentCandidate, error) { return assess(ctx, input.Clone()) })
 		observation := ScorerObservation{ID: sc.ID, Attempts: attempts}
 		if scoreErr != nil || !validCandidate(candidate) {
 			observation.Status = "ERRORED"
@@ -270,6 +278,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 	for _, c := range cfg.Cases {
 		occurrences[c.ID]++
 	}
+	assessors := assessorsFor(cfg.Scorers, custom)
 	results := make([]V2CaseResult, len(cfg.Cases))
 	diagnostics := make([][]Diagnostic, len(cfg.Cases))
 	jobs := make(chan int)
@@ -282,7 +291,7 @@ func runCases(ctx context.Context, cfg V2Config, digest, artifactDir string, o O
 				if ctx.Err() != nil {
 					continue
 				}
-				results[i], diagnostics[i] = evaluateCase(ctx, cfg, i, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, custom)
+				results[i], diagnostics[i] = evaluateCase(ctx, cfg, i, cfg.Cases[i], occurrences[cfg.Cases[i].ID], maxAttempts, assessors)
 			}
 		}()
 	}
@@ -320,4 +329,32 @@ dispatch:
 		return fail(o, "ARTIFACT_COMMIT_FAILED", "RUN", "Required artifact publication failed")
 	}
 	return sealed
+}
+
+// assessor scores one case. Every scorer kind is one, so evaluateCase applies
+// the attempt budget and the validCandidate rule without knowing the kind.
+type assessor func(context.Context, ScorerInput) (AssessmentCandidate, error)
+
+// assessorsFor resolves cfg's scorers once per run, parallel to scorers.
+// Validation has already checked that every custom scorer is registered.
+func assessorsFor(scorers []V2Scorer, custom map[string]RegisteredScorer) []assessor {
+	out := make([]assessor, len(scorers))
+	for i, sc := range scorers {
+		switch sc.Kind {
+		case "exact_match":
+			out[i] = assessExactMatch
+		case "custom":
+			out[i] = custom[sc.ID].Evaluate
+		case "command":
+			out[i] = commandAssessor(sc.Command, sc.Args)
+		}
+	}
+	return out
+}
+
+func assessExactMatch(_ context.Context, in ScorerInput) (AssessmentCandidate, error) {
+	actual, _ := decodeJSONValue(in.Actual)
+	expected, _ := decodeJSONValue(in.Expected)
+	score := exactMatchScore(actual, expected)
+	return AssessmentCandidate{Kind: "SCORED", Score: &score}, nil
 }

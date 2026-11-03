@@ -157,31 +157,51 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// errWorkspace is a failure before the process started, so it has no stdout.
+var errWorkspace = errors.New("cannot prepare workspace")
+
+// runIsolated starts command without a shell, in a fresh working directory
+// named by workdirPrefix, with only PATH in its environment and its own
+// process group. stderr is discarded unread, so no process diagnostic can
+// reach evalkit output. It returns errWorkspace, ctx's error once ctx is
+// done, or runProcessGroup's error. After a ctx error the stdout copier may
+// still be writing, so the caller must not read stdout.
+func runIsolated(ctx context.Context, workdirPrefix, command string, args []string, stdin []byte, stdout io.Writer) error {
+	workdir, err := os.MkdirTemp("", workdirPrefix)
+	if err != nil {
+		return errWorkspace
+	}
+	defer os.RemoveAll(workdir)
+	cmd := exec.Command(command, args...)
+	cmd.Dir = workdir
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdout = stdout
+	cmd.Stderr = io.Discard
+	if err := runProcessGroup(ctx, cmd); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	return nil
+}
+
 // execute returns what it captured from stdout on every path except
 // cancellation, so a malformed, oversized or failed execution keeps its
 // bytes. On success head is the buffer execute returned before V7.
 func execute(ctx context.Context, c Config) (targetStdout, error) {
 	var stream stdoutDigest
-	workdir, err := os.MkdirTemp("", "evalkit-target-")
-	if err != nil {
-		return stream.capture(nil), errors.New("cannot prepare target workspace")
-	}
-	defer os.RemoveAll(workdir)
 	payload, _ := json.Marshal(struct {
 		CaseID string          `json:"case_id"`
 		Input  json.RawMessage `json:"input"`
 	}{c.Case.ID, c.Case.Input})
-	cmd := exec.Command(c.Target.Command, c.Target.Args...)
-	cmd.Dir = workdir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
 	var stdout boundedBuffer
-	cmd.Stdout = io.MultiWriter(&stdout, &stream)
-	cmd.Stderr = io.Discard // Never echo arbitrary target diagnostics as trusted output.
-	if err := runProcessGroup(ctx, cmd); err != nil {
-		if ctx.Err() != nil {
-			// After a kill, runProcessGroup can return before cmd.Wait while
-			// the stdout copier still writes, so reading here would race.
+	if err := runIsolated(ctx, "evalkit-target-", c.Target.Command, c.Target.Args, append(payload, '\n'), io.MultiWriter(&stdout, &stream)); err != nil {
+		switch {
+		case errors.Is(err, errWorkspace):
+			return stream.capture(nil), errors.New("cannot prepare target workspace")
+		case ctx.Err() != nil:
 			return targetStdout{}, ctx.Err()
 		}
 		// Any other error is a failed Start, where no copier ran, or a
@@ -236,10 +256,10 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 			return runV2(ctx, raw, artifactDir, o)
 		case 3:
 			return runV3(ctx, raw, artifactDir, o)
-		case 4:
-			return runV4(ctx, raw, artifactDir, o, extensions)
+		case 4, 5:
+			return runV4(ctx, *header.Version, raw, artifactDir, o, extensions)
 		default:
-			return fail(o, "CONFIG_INVALID", "RUN", fmt.Sprintf("Configuration validation failed: unsupported configuration version %d; supported versions are 1, 2, 3 and 4", *header.Version))
+			return fail(o, "CONFIG_INVALID", "RUN", fmt.Sprintf("Configuration validation failed: unsupported configuration version %d; supported versions are 1, 2, 3, 4 and 5", *header.Version))
 		}
 	}
 	c, digest, err := validate(raw)

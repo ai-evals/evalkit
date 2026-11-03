@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bounded-exhaustive check of the evalkit quality verdict.
 # Usage: .claude/skills/formal-verify-verdict/run.sh [test-regex]
-#   default regex runs P1..P4 (~1 minute). Example: run.sh 'P3' for the 0.1s pure check.
+#   default regex runs P1..P4 (~2.5 minutes). Example: run.sh 'P3' for the 0.1s pure check.
 # Exit 0: P1-P3 pass and P4 shows only the findings in known-findings.txt.
 # Exit 1: a new violation (real bug or modeling error, see SKILL.md). Exit 2: did not run.
 set -uo pipefail

@@ -1,22 +1,22 @@
 ---
 name: formal-verify-verdict
-description: Bounded-exhaustive verification of evalkit's PASS / FAIL / INDETERMINATE quality verdict, covering the producer (execute, evaluateCase, retryOperation, runCases, qualityOfCases, publish) and the inspector (VerifyArtifact, verifyMeasurementAccounting, verifyRetainedEvidence), plus the retained output and diagnostic attribution every published case carries. Use it before you merge any change to internal/engine/v2.go, v3.go, v4.go, retry.go, extensions.go, inspection.go, retained.go, or the execute, verdict and publish parts of engine.go, or when you change the meaning of a scorer status, case state, required scorer, threshold, attempt budget, retained output or diagnostic subject.
+description: Bounded-exhaustive verification of evalkit's PASS / FAIL / INDETERMINATE quality verdict, covering the producer (execute, evaluateCase, the exact_match, custom and command scorer assessors, retryOperation, runCases, qualityOfCases, publish) and the inspector (VerifyArtifact, verifyMeasurementAccounting, verifyRetainedEvidence), plus the retained output and diagnostic attribution every published case carries. Use it before you merge any change to internal/engine/v2.go, v3.go, v4.go, v5.go, retry.go, extensions.go, inspection.go, retained.go, or the execute, verdict and publish parts of engine.go, or when you change the meaning of a scorer status, case state, required scorer, threshold, attempt budget, command scorer protocol, retained output or diagnostic subject.
 ---
 
 # Formal verification: the quality verdict
 
-**Property.** evalkit says PASS only when every case was scored by every required scorer and each score meets its threshold. It says FAIL only when that coverage is complete and some required score is below its threshold. Every other case is INDETERMINATE. The inspector accepts a stored verdict only if it follows from the artifact's own contract.
+**Property.** evalkit says PASS only when every case was scored by every required scorer and each score meets its threshold, whatever the scorer's kind. It says FAIL only when that coverage is complete and some required score is below its threshold. Every other case is INDETERMINATE. The inspector accepts a stored verdict only if it follows from the artifact's own contract.
 
 **Harm if it breaks.** A team ships a model on a PASS that had missing or failed required evidence, or trusts an inspected artifact whose verdict the run could never have produced.
 
 ## Tool and why
 
-Go has no verifier that the team can install and that handles this code (generics, `reflect.DeepEqual`, real processes, the filesystem). So this check runs the real code on every input in a bounded domain, chosen so that every branch of the verdict logic sees each of its distinct cases. It does not test a hand-written model. The oracles in the test come from the README contract and never call the code under test. The check needs only `go` and `/bin/sh`, so it installs nothing.
+Go has no verifier that the team can install and that handles this code (generics, `reflect.DeepEqual`, real processes, the filesystem). So this check runs the real code on every input in a bounded domain, chosen so that every branch of the verdict logic sees each of its distinct cases. It does not test a hand-written model. The oracles in the test come from the README contract and never call the code under test. The check needs only `go` and `/bin/sh`, so it installs nothing. Command scorers are real `/bin/sh` processes, so their stdout parsing and exit-status mapping run too.
 
 ## Run it
 
 ```sh
-.claude/skills/formal-verify-verdict/run.sh          # P1-P4, about 50 s
+.claude/skills/formal-verify-verdict/run.sh          # P1-P4, about 2 to 3 minutes
 .claude/skills/formal-verify-verdict/run.sh P3       # pure aggregation only, about 0.1 s
 .claude/skills/formal-verify-verdict/run.sh 'P1|P2'  # real-pipeline checks only
 ```
@@ -31,8 +31,8 @@ The harness is `internal/engine/formal_verdict_test.go`. It is behind the build 
 
 | ID | What it checks | Code it drives |
 | --- | --- | --- |
-| P1 | Every single-case run gives the contract verdict, case state, per-scorer status, score and attempt count. The published artifact passes `VerifyArtifact` with the same verdict. | `RunJSONWithScorers` → `runV4` → `runCases` → `evaluateCase` → `execute` → `retryOperation` → `qualityOfCases` → `publish` → `VerifyArtifact` |
-| P1 (budget) | A custom scorer runs exactly as many times as `attempts` records, and never more than `scorer_max_attempts`. | `retryOperation` |
+| P1 | Every single-case run gives the contract verdict, case state, per-scorer status, score and attempt count. The published artifact passes `VerifyArtifact` with the same verdict. | `RunJSONWithScorers` → `runV4` (version 5) → `runCases` → `evaluateCase` → `execute` → `retryOperation` → `commandAssessor` → `parseScorerResult` → `qualityOfCases` → `publish` → `VerifyArtifact` |
+| P1 (budget) | A custom or command scorer runs exactly as many times as `attempts` records, and never more than `scorer_max_attempts`. A command scorer counts its own executions in a log file. | `retryOperation`, `commandAssessor` |
 | P1/P2 (evidence) | In every P1 and P2 run, the record says `retained_output` RETAINED, and each case whose target ran keeps exactly what the target wrote: the echoed request (form JSON), or `partial` for a failing target (form MALFORMED), untruncated, with matching size and SHA-256. INVALID cases keep nothing. The diagnostics are exactly one per INVALID case, failed target and ERRORED observation, in dataset order and then scorer order, each with its static message, case index and case ID, and SCORER ones with their scorer. Only the case index tells the duplicate-ID pair apart. Violations start with `EVIDENCE:`. | `execute` → `evaluateCase` → `retainOutput` → `publish` (`encodeRunEvidence`) → `VerifyArtifact` (`verifyRetainedEvidence`) |
 | P2 | Runs that hold every behaviour pair, a failing target and a duplicate-ID pair keep dataset order, map each case correctly, and give the right verdict at concurrency 1 and 16. | `runCases` worker pool |
 | P3 | `qualityOfCases` agrees with the contract on every abstract combination of case state × scorer status × score × required × threshold. | `qualityOfCases`, the one verdict function shared by the producer and the inspector |
@@ -40,8 +40,9 @@ The harness is `internal/engine/formal_verdict_test.go`. It is behind the build 
 
 ## Bounds and assumptions
 
-- Scorers: exactly 2 per run in P1 and P2. Each is `custom` or `exact_match`, and each is required or optional with at least one required, which config validation enforces. Thresholds are {0.5, 1}. With scores {0, 0.5, 1}, that covers below, equal and above.
-- Custom scorer behaviours: `scored0`, `scored0.5`, `scored1`, `uneval` (valid UNEVALUABLE), `invalid` (score 1.5), `perm` (non-retryable error), `transOK` (retryable error, then success), `transForever`.
+- Scorers: exactly 2 per run in P1 and P2. Each is `custom`, `exact_match` or `command`, and each is required or optional with at least one required, which config validation enforces. Thresholds are {0.5, 1}. With scores {0, 0.5, 1}, that covers below, equal and above. P1 and P2 run version 5 configs, which admit all three kinds.
+- Command shapes bound: a shape with a command scorer uses threshold 0.5 for both scorers. Each process start costs milliseconds, and the whole domain took over 10 minutes. Thresholds act on a stored score the same way for every kind, and the custom shapes cover both thresholds. P1 runs 3696 single-case runs, P2 252 multi-case runs.
+- Custom and command scorer behaviours: `scored0`, `scored0.5`, `scored1`, `uneval` (valid UNEVALUABLE), `invalid` (score 1.5), `perm` (non-retryable error), `transOK` (retryable error, then success), `transForever`. A command scorer is one `/bin/sh` script, `commandScript`, that reads the case ID from its stdin line and takes `caseID=behaviour` arguments. It prints `{"score":0}`, `{"score":0.5}`, `{"score":1}`, `{"unevaluable":"EVIDENCE_MISSING"}` or `{"score":1.5}`, exits 1 for `perm`, and exits 75 for the transient behaviours. The oracle gives both kinds the same expected observation, because the README gives them the same contract.
 - `exact_match` behaviours: match and mismatch. Two exact scorers always agree, so a split pair is not a reachable input.
 - `scorer_max_attempts` is {1, 2}. Concurrency is 1 for P1 and {1, 16} for P2.
 - P3 bounds: up to 3 cases × 1 scorer, and up to 2 cases × 2 scorers. Thresholds are {0, 0.5, 1}. Statuses are SUCCEEDED with a score in {0, 0.5, 1} or with no score, ERRORED, UNEVALUABLE and SKIPPED. Case states are SCORED, ERRORED and INVALID.
@@ -84,6 +85,7 @@ Each check below was run against a scratch break of real code, caught the break,
 | `execute`: a failed target's stdout dropped (`stream.capture(nil)` on the process-failure path) | P2 (`EVIDENCE: case 64 (tfail-0) retained MALFORMED/7/truncated=true/""`) |
 | `runCases`: workers of one run pass outputs through a shared variable | P2 at concurrency 16 only (`EVIDENCE: case 25 (k25) retained JSON/33/.../"{\"case_id\":\"k2\"...`), none at concurrency 1 |
 | `evaluateCase`: SCORER diagnostics attributed to case index 0 | P2 (`EVIDENCE: diagnostics [SCORER_RESULT_INVALID/SCORER/0/k4/s1/...`) |
+| `commandAssessor`: exit 75 no longer mapped to `RetryableScorerError` (compared against 76) | P1, 647 violations (`case k14 scorer s1 (command transOK): got ERRORED/none/attempts=1, want SUCCEEDED/1/attempts=2`) |
 | `VerifyArtifact`: a new rule refuses a report.json whose keys are not in struct order | P4 (`P4 would pass vacuously: the unmodified rewrite of base [scored0 scored1] is refused`) |
 
 ## Coverage record and sync
@@ -93,20 +95,21 @@ Last confirmed at commit `51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f` (V7 squash c
 
 Covered code:
 
-- `internal/engine/v2.go`: `validateScorerContract` (the required/threshold rules that the oracle assumes, shared by config validation and inspection), `validateV2WithCustom`, `evaluateCase`, `qualityOfCases`, `runCases`
-- `internal/engine/v4.go`: `runV4`
-- `internal/engine/v3.go`: `runV3`. It shares `runCases`, but P1 and P2 drive V4 configs only.
-- `internal/engine/retry.go`: `retryOperation`, `retryScorer`, `retryAssessment`
+- `internal/engine/v2.go`: `validateScorerContract` (the required/threshold rules that the oracle assumes, shared by config validation and inspection), `validateV2WithCustom`, `evaluateCase`, `assessorsFor`, `assessExactMatch`, `qualityOfCases`, `runCases`
+- `internal/engine/v4.go`: `runV4`, which runs versions 4 and 5
+- `internal/engine/v5.go`: `commandAssessor`, `parseScorerResult`
+- `internal/engine/v3.go`: `runV3`. It shares `runCases`, but P1 and P2 drive version 5 configs only.
+- `internal/engine/retry.go`: `retryOperation`, `retryAssessment`
 - `internal/engine/extensions.go`: `validCandidate`
 - `internal/engine/inspection.go`: `measurementForCases`, `verifyMeasurementAccounting`, `validObservedScore`
-- `internal/engine/engine.go`: `execute` (stdout capture on every path but cancellation), `exactMatchScore`, `publish`, `VerifyArtifact`
+- `internal/engine/engine.go`: `runIsolated`, `execute` (stdout capture on every path but cancellation), `exactMatchScore`, `publish`, `VerifyArtifact`
 - `internal/engine/retained.go`: `retentionAllowance`, `retainOutput`, `classifyOutput`, `stdoutDigest`, `caseDiagnostic`, `scorerDiagnostic`, `retentionOf`, `mapOutputs`, `withoutOutputs`, `encodeRunEvidence` (its untrimmed rung only), `verifyRetainedEvidence`, `possibleOutput`, `attributedTo`, and the `UnmarshalText` of `OutputForm` and `OutputRetention`
 - `internal/engine/readmodel.go`: `observedCases`, which `verifyRetainedEvidence` and `encodeRunEvidence` lift v1 through
 
 To see whether covered code changed since the sync commit:
 
 ```sh
-git diff --stat 51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go internal/engine/retained.go internal/engine/readmodel.go
+git diff --stat 51055a5c78cc1c15c56a7a0d3e58f2b76aa8a16f -- internal/engine/v2.go internal/engine/v3.go internal/engine/v4.go internal/engine/v5.go internal/engine/retry.go internal/engine/extensions.go internal/engine/inspection.go internal/engine/engine.go internal/engine/retained.go internal/engine/readmodel.go
 ```
 
 If that diff is non-empty, read it against the properties above, update the oracle or the domains if the contract changed, and run `run.sh`. Move the sync commit forward only after you have confirmed that the harness still describes the code at the new commit. "The run passes" is not enough on its own: for example, a new scorer status that the domain never produces would also pass.

@@ -11,11 +11,13 @@ import (
 type ScorerInput struct {
 	CaseID   string
 	ScorerID string
+	Input    json.RawMessage
 	Actual   json.RawMessage
 	Expected json.RawMessage
 }
 
 func (s ScorerInput) Clone() ScorerInput {
+	s.Input = append(json.RawMessage(nil), s.Input...)
 	s.Actual = append(json.RawMessage(nil), s.Actual...)
 	s.Expected = append(json.RawMessage(nil), s.Expected...)
 	return s
