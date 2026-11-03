@@ -256,10 +256,10 @@ func runJSON(ctx context.Context, raw []byte, artifactDir string, extensions map
 			return runV2(ctx, raw, artifactDir, o)
 		case 3:
 			return runV3(ctx, raw, artifactDir, o)
-		case 4:
-			return runV4(ctx, raw, artifactDir, o, extensions)
+		case 4, 5:
+			return runV4(ctx, *header.Version, raw, artifactDir, o, extensions)
 		default:
-			return fail(o, "CONFIG_INVALID", "RUN", fmt.Sprintf("Configuration validation failed: unsupported configuration version %d; supported versions are 1, 2, 3 and 4", *header.Version))
+			return fail(o, "CONFIG_INVALID", "RUN", fmt.Sprintf("Configuration validation failed: unsupported configuration version %d; supported versions are 1, 2, 3, 4 and 5", *header.Version))
 		}
 	}
 	c, digest, err := validate(raw)

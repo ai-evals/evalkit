@@ -35,6 +35,10 @@ type V2Scorer struct {
 	Threshold      float64 `json:"threshold"`
 	Required       bool    `json:"required"`
 	Implementation string  `json:"implementation,omitempty"`
+	// Command and Args are set only for kind command, so the digests of
+	// version 2 to 4 configs and every older artifact are unchanged.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
 }
 
 type ScorerObservation struct {
@@ -56,10 +60,12 @@ type V2CaseResult struct {
 }
 
 func validateV2(raw []byte) (V2Config, string, error) {
-	return validateV2WithCustom(raw, nil)
+	return validateV2WithCustom(raw, nil, false)
 }
 
-func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V2Config, string, error) {
+// validateV2WithCustom validates the version 2 shape that versions 3 to 5
+// re-encode into. commandScorers is true only for version 5.
+func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer, commandScorers bool) (V2Config, string, error) {
 	var cfg V2Config
 	if len(raw) > maxConfigBytes {
 		return cfg, "", errors.New("configuration exceeds size limit")
@@ -75,6 +81,11 @@ func validateV2WithCustom(raw []byte, registered map[string]RegisteredScorer) (V
 	}
 	if strings.TrimSpace(cfg.Target.Command) == "" {
 		return cfg, "", errors.New("target.command is required")
+	}
+	for _, scorer := range cfg.Scorers {
+		if !commandScorers && (scorer.Kind == "command" || scorer.Command != "" || len(scorer.Args) > 0) {
+			return cfg, "", errors.New("command scorers require configuration version 5")
+		}
 	}
 	if err := validateScorerContract(cfg.Scorers); err != nil {
 		return cfg, "", err
@@ -121,8 +132,18 @@ func validateScorerContract(scorers []V2Scorer) error {
 			if scorer.Implementation == "" {
 				return errors.New("custom scorer identity or registration unavailable")
 			}
+		case "command":
+			if strings.TrimSpace(scorer.Command) == "" {
+				return errors.New("command scorer requires a command")
+			}
+			if scorer.Implementation != "" {
+				return errors.New("command scorer takes no implementation")
+			}
 		default:
 			return errors.New("unsupported scorer kind")
+		}
+		if scorer.Kind != "command" && (scorer.Command != "" || len(scorer.Args) > 0) {
+			return errors.New("only command scorers take command and args")
 		}
 		if scorer.Required {
 			required++
@@ -324,6 +345,8 @@ func assessorsFor(scorers []V2Scorer, custom map[string]RegisteredScorer) []asse
 			out[i] = assessExactMatch
 		case "custom":
 			out[i] = custom[sc.ID].Evaluate
+		case "command":
+			out[i] = commandAssessor(sc.Command, sc.Args)
 		}
 	}
 	return out
